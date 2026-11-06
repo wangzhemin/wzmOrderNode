@@ -21,7 +21,8 @@ const DEFAULT_FIELDS = [
   { key: 'recharge_full', label: '充值金额全款', type: 'number' },
   { key: 'recycle_amount', label: '回收金额', type: 'number' },
   { key: 'order_cost', label: '订单成本', type: 'number' },
-  { key: 'latest_cost', label: '最近成本', type: 'number' },
+  { key: 'rebate', label: '返利', type: 'number' },
+  { key: 'latest_cost', label: '最终成本', type: 'number' },
   { key: 'est_profit', label: '预计利润', type: 'number' },
 ];
 
@@ -78,6 +79,16 @@ async function main() {
         type: 'number',
       });
     }
+    // 注入 rebate（返利）字段，位于 order_cost 之后；latest_cost 改名「最终成本」
+    if (!fields.some((f) => f.key === 'rebate')) {
+      const idx = fields.findIndex((f) => f.key === 'order_cost');
+      fields.splice(idx >= 0 ? idx + 1 : fields.length, 0, {
+        key: 'rebate',
+        label: '返利',
+        type: 'number',
+      });
+    }
+    fields = fields.map((f) => (f.key === 'latest_cost' ? { ...f, label: '最终成本' } : f));
     await pool.query('UPDATE categories SET fields = $1 WHERE id = $2', [
       JSON.stringify(fields),
       c.id,

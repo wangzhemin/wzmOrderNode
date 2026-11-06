@@ -89,14 +89,20 @@ CREATE TABLE IF NOT EXISTS public.recharges (
 );
 COMMENT ON TABLE public.recharges IS '充值金账户';
 
--- 回收商品（种类 + 回收单价）
+-- 回收商品（种类 + 回收单价 + 所属大类 + 颜色标记）
 CREATE TABLE IF NOT EXISTS public.recycle_items (
-  id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  name       text          NOT NULL UNIQUE,
-  price      numeric(12,2) NOT NULL DEFAULT 0,
-  created_at timestamptz   NOT NULL DEFAULT NOW()
+  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name        text          NOT NULL UNIQUE,
+  price       numeric(12,2) NOT NULL DEFAULT 0,
+  category_id uuid REFERENCES public.categories(id) ON DELETE SET NULL,
+  color       text          NOT NULL DEFAULT '',
+  created_at  timestamptz   NOT NULL DEFAULT NOW()
 );
-COMMENT ON TABLE public.recycle_items IS '回收商品种类及单价';
+COMMENT ON TABLE public.recycle_items IS '回收商品种类及单价（可归属大类，带颜色标记）';
+
+-- 回收商品兼容旧库：补充大类列、颜色列
+ALTER TABLE public.recycle_items ADD COLUMN IF NOT EXISTS category_id uuid REFERENCES public.categories(id) ON DELETE SET NULL;
+ALTER TABLE public.recycle_items ADD COLUMN IF NOT EXISTS color text NOT NULL DEFAULT '';
 
 -- 出货记录兼容旧库：补充新增列
 ALTER TABLE public.shipments ADD COLUMN IF NOT EXISTS shipper text NOT NULL DEFAULT '';

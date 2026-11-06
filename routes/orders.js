@@ -258,8 +258,18 @@ router.post('/ship', async (req, res) => {
     }
 
     await client.query('BEGIN');
+    // 只有「已收货」的订单才能发货，防止误选未收货订单
+    const { rows: statusRows } = await client.query(
+      `SELECT id, status FROM orders WHERE id = ANY($1::uuid[]) FOR UPDATE`,
+      [order_ids]
+    );
+    const pendingCount = statusRows.filter((r) => r.status !== 'received').length;
+    if (pendingCount > 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ code: 400, msg: '只有已收货的订单才能发货，请先收货再选择发货' });
+    }
     const { rows: orders } = await client.query(
-      `SELECT id, data FROM orders WHERE id = ANY($1::uuid[]) AND status <> 'shipped' FOR UPDATE`,
+      `SELECT id, data FROM orders WHERE id = ANY($1::uuid[]) AND status = 'received' FOR UPDATE`,
       [order_ids]
     );
     if (orders.length === 0) {

@@ -6,12 +6,37 @@ const { authRequired } = require('../middleware/auth');
 const router = express.Router();
 router.use(authRequired);
 
+// 带大类名称的查询
+const SELECT_SQL = `
+  SELECT ri.id, ri.name, ri.price, ri.category_id, c.name AS category_name, ri.color, ri.created_at
+  FROM recycle_items ri
+  LEFT JOIN categories c ON c.id = ri.category_id
+`;
+
+// 校验颜色格式：#rgb 或 #rrggbb，可为空
+function normalizeColor(color) {
+  const c = String(color || '').trim().toLowerCase();
+  if (!c) return '';
+  if (!/^#([0-9a-f]{3}|[0-9a-f]{6})$/.test(c)) {
+    throw new Error('颜色格式不正确');
+  }
+  return c;
+}
+
+// 校验大类 id：为空返回 null，否则必须存在
+async function checkCategory(client, categoryId) {
+  if (!categoryId) return null;
+  const { rows } = await client.query('SELECT id FROM categories WHERE id = $1', [categoryId]);
+  if (rows.length === 0) {
+    throw new Error('所属大类不存在');
+  }
+  return categoryId;
+}
+
 // GET /api/recycle-items
 router.get('/', async (req, res) => {
   try {
-    const { rows } = await pool.query(
-      'SELECT id, name, price, created_at FROM recycle_items ORDER BY created_at DESC'
-    );
+    const { rows } = await pool.query(`${SELECT_SQL} ORDER BY ri.created_at DESC`);
     res.json({ code: 0, data: { list: rows } });
   } catch (err) {
     console.error('查询回收商品失败:', err.message);
@@ -19,10 +44,10 @@ router.get('/', async (req, res) => {
   }
 });
 
-// POST /api/recycle-items  { name, price }
+// POST /api/recycle-items  { name, price, category_id?, color? }
 router.post('/', async (req, res) => {
   try {
-    const { name, price } = req.body || {};
+    const { name, price, category_id, color } = req.body || {};
     if (!name || !String(name).trim()) {
       return res.status(400).json({ code: 400, msg: '种类名称不能为空' });
     }
@@ -30,25 +55,31 @@ router.post('/', async (req, res) => {
     if (isNaN(p) || p < 0) {
       return res.status(400).json({ code: 400, msg: '回收金额不正确' });
     }
+    const c = normalizeColor(color);
+    await checkCategory(pool, category_id);
     const dup = await pool.query('SELECT id FROM recycle_items WHERE name = $1', [name.trim()]);
     if (dup.rows.length > 0) {
       return res.status(409).json({ code: 409, msg: '该种类已存在' });
     }
-    const { rows } = await pool.query(
-      'INSERT INTO recycle_items (name, price) VALUES ($1, $2) RETURNING id, name, price, created_at',
-      [name.trim(), p]
+    await pool.query(
+      'INSERT INTO recycle_items (name, price, category_id, color) VALUES ($1, $2, $3, $4)',
+      [name.trim(), p, category_id || null, c]
     );
+    const { rows } = await pool.query(`${SELECT_SQL} WHERE ri.name = $1`, [name.trim()]);
     res.json({ code: 0, msg: '新增成功', data: rows[0] });
   } catch (err) {
+    if (err.message === '所属大类不存在' || err.message === '颜色格式不正确') {
+      return res.status(400).json({ code: 400, msg: err.message });
+    }
     console.error('新增回收商品失败:', err.message);
     res.status(500).json({ code: 500, msg: '服务器内部错误' });
   }
 });
 
-// PUT /api/recycle-items/:id
+// PUT /api/recycle-items/:id  { name, price, category_id?, color? }
 router.put('/:id', async (req, res) => {
   try {
-    const { name, price } = req.body || {};
+    const { name, price, category_id, color } = req.body || {};
     if (!name || !String(name).trim()) {
       return res.status(400).json({ code: 400, msg: '种类名称不能为空' });
     }
@@ -56,6 +87,8 @@ router.put('/:id', async (req, res) => {
     if (isNaN(p) || p < 0) {
       return res.status(400).json({ code: 400, msg: '回收金额不正确' });
     }
+    const c = normalizeColor(color);
+    await checkCategory(pool, category_id);
     const dup = await pool.query('SELECT id FROM recycle_items WHERE name = $1 AND id <> $2', [
       name.trim(),
       req.params.id,
@@ -63,13 +96,17 @@ router.put('/:id', async (req, res) => {
     if (dup.rows.length > 0) {
       return res.status(409).json({ code: 409, msg: '该种类已存在' });
     }
-    const { rows } = await pool.query(
-      'UPDATE recycle_items SET name = $1, price = $2 WHERE id = $3 RETURNING id, name, price, created_at',
-      [name.trim(), p, req.params.id]
+    const { rowCount } = await pool.query(
+      'UPDATE recycle_items SET name = $1, price = $2, category_id = $3, color = $4 WHERE id = $5',
+      [name.trim(), p, category_id || null, c, req.params.id]
     );
-    if (rows.length === 0) return res.status(404).json({ code: 404, msg: '回收商品不存在' });
+    if (rowCount === 0) return res.status(404).json({ code: 404, msg: '回收商品不存在' });
+    const { rows } = await pool.query(`${SELECT_SQL} WHERE ri.id = $1`, [req.params.id]);
     res.json({ code: 0, msg: '修改成功', data: rows[0] });
   } catch (err) {
+    if (err.message === '所属大类不存在' || err.message === '颜色格式不正确') {
+      return res.status(400).json({ code: 400, msg: err.message });
+    }
     console.error('修改回收商品失败:', err.message);
     res.status(500).json({ code: 500, msg: '服务器内部错误' });
   }
