@@ -6,25 +6,28 @@ const path = require('path');
 const bcrypt = require('bcryptjs');
 const pool = require('./db');
 
-// 图中订单的默认字段（奶粉 / 美妆等大类共用）
+// 订单默认字段（与用户 Excel 列一致：账号 店铺名 商品种类 数量 购买日期 订单编号 充值金 订单金额 订单成本 返利 最终成本 回收 最终利润）
 const DEFAULT_FIELDS = [
+  { key: 'account', label: '账号', type: 'text' },
   { key: 'shop', label: '店铺名', type: 'text' },
-  { key: 'account', label: '购买账号', type: 'text' },
-  { key: 'product_name', label: '商品名', type: 'text' },
   { key: 'category_name', label: '商品种类', type: 'recycle' },
   { key: 'quantity', label: '数量', type: 'number' },
-  { key: 'prebuy_date', label: '预买日期', type: 'date' },
+  { key: 'prebuy_date', label: '购买日期', type: 'date' },
   { key: 'order_no', label: '订单编号', type: 'text' },
-  { key: 'recharge_ref', label: '使用充值金', type: 'recharge' },
   { key: 'recharge_gold', label: '充值金', type: 'number' },
-  { key: 'recharge_card', label: '充值卡', type: 'number' },
-  { key: 'recharge_full', label: '充值金额全款', type: 'number' },
-  { key: 'recycle_amount', label: '回收金额', type: 'number' },
+  { key: 'recharge_ref', label: '关联充值金', type: 'recharge' },
+  { key: 'recharge_full', label: '订单金额', type: 'number' },
   { key: 'order_cost', label: '订单成本', type: 'number' },
   { key: 'rebate', label: '返利', type: 'number' },
   { key: 'latest_cost', label: '最终成本', type: 'number' },
-  { key: 'est_profit', label: '预计利润', type: 'number' },
+  { key: 'recycle_amount', label: '回收', type: 'number' },
+  { key: 'est_profit', label: '最终利润', type: 'number' },
 ];
+
+// 字段标准 meta（key → label/type），迁移时按此统一标签
+const FIELD_META = Object.fromEntries(DEFAULT_FIELDS.map((f) => [f.key, f]));
+// 字段标准顺序（Excel 列顺序；充值金/充值卡已合并为 recharge_gold）
+const FIELD_ORDER = DEFAULT_FIELDS.map((f) => f.key);
 
 async function main() {
   const sql = fs.readFileSync(path.join(__dirname, 'sql', 'init.sql'), 'utf8');
@@ -56,39 +59,31 @@ async function main() {
     WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(fields) f WHERE f->>'key' = 'received')
   `);
 
-  // 迁移：现有大类字段升级
-  // 1) category_name 改为 recycle 类型（联动回收商品）
-  // 2) 注入 recharge_ref（使用充值金）、recycle_amount（回收金额）字段
+  // 迁移：充值卡并入充值金（两列本是一个东西，统一叫充值金）
+  await pool.query(`
+    UPDATE orders SET data = jsonb_set(data, '{recharge_gold}', data->'recharge_card')
+    WHERE (data->>'recharge_gold' IS NULL OR data->>'recharge_gold' = '')
+      AND COALESCE(data->>'recharge_card', '') <> ''
+  `);
+  await pool.query(`UPDATE orders SET data = data - 'recharge_card' WHERE data ? 'recharge_card'`);
+  // 商品名字段移除（订单已关联商品种类）
+  await pool.query(`UPDATE orders SET data = data - 'product_name' WHERE data ? 'product_name'`);
+
+  // 迁移：现有大类字段统一为 Excel 列顺序与标签（自定义的额外字段保留在末尾）
   const cats = await pool.query('SELECT id, fields FROM categories');
   for (const c of cats.rows) {
-    let fields = (c.fields || []).filter((f) => f.key !== 'received');
-    fields = fields.map((f) => (f.key === 'category_name' ? { ...f, type: 'recycle' } : f));
-    if (!fields.some((f) => f.key === 'recharge_ref')) {
-      const idx = fields.findIndex((f) => f.key === 'recharge_gold');
-      fields.splice(idx >= 0 ? idx : fields.length, 0, {
-        key: 'recharge_ref',
-        label: '使用充值金',
-        type: 'recharge',
-      });
+    const old = new Map(
+      (c.fields || [])
+        .filter((f) => f.key !== 'received' && f.key !== 'recharge_card' && f.key !== 'product_name')
+        .map((f) => [f.key, f])
+    );
+    const fields = [];
+    for (const key of FIELD_ORDER) {
+      fields.push({ ...FIELD_META[key] });
+      old.delete(key);
     }
-    if (!fields.some((f) => f.key === 'recycle_amount')) {
-      const idx = fields.findIndex((f) => f.key === 'order_cost');
-      fields.splice(idx >= 0 ? idx : fields.length, 0, {
-        key: 'recycle_amount',
-        label: '回收金额',
-        type: 'number',
-      });
-    }
-    // 注入 rebate（返利）字段，位于 order_cost 之后；latest_cost 改名「最终成本」
-    if (!fields.some((f) => f.key === 'rebate')) {
-      const idx = fields.findIndex((f) => f.key === 'order_cost');
-      fields.splice(idx >= 0 ? idx + 1 : fields.length, 0, {
-        key: 'rebate',
-        label: '返利',
-        type: 'number',
-      });
-    }
-    fields = fields.map((f) => (f.key === 'latest_cost' ? { ...f, label: '最终成本' } : f));
+    // 用户自定义的额外字段放在末尾
+    for (const f of old.values()) fields.push(f);
     await pool.query('UPDATE categories SET fields = $1 WHERE id = $2', [
       JSON.stringify(fields),
       c.id,
