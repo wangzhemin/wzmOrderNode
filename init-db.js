@@ -14,8 +14,6 @@ const DEFAULT_FIELDS = [
   { key: 'quantity', label: '数量', type: 'number' },
   { key: 'prebuy_date', label: '购买日期', type: 'date' },
   { key: 'order_no', label: '订单编号', type: 'text' },
-  { key: 'recharge_gold', label: '充值金', type: 'number' },
-  { key: 'recharge_ref', label: '关联充值金', type: 'recharge' },
   { key: 'recharge_full', label: '订单金额', type: 'number' },
   { key: 'order_cost', label: '订单成本', type: 'number' },
   { key: 'rebate', label: '返利', type: 'number' },
@@ -68,13 +66,21 @@ async function main() {
   await pool.query(`UPDATE orders SET data = data - 'recharge_card' WHERE data ? 'recharge_card'`);
   // 商品名字段移除（订单已关联商品种类）
   await pool.query(`UPDATE orders SET data = data - 'product_name' WHERE data ? 'product_name'`);
+  // 充值金/关联充值金从订单中移除（充值金管理模块独立记账，不再与订单关联）
+  await pool.query(
+    `UPDATE orders SET data = data - 'recharge_gold' - 'recharge_ref' - 'recharge_used'
+     WHERE data ?| array['recharge_gold','recharge_ref','recharge_used']`
+  );
 
   // 迁移：现有大类字段统一为 Excel 列顺序与标签（自定义的额外字段保留在末尾）
   const cats = await pool.query('SELECT id, fields FROM categories');
   for (const c of cats.rows) {
     const old = new Map(
       (c.fields || [])
-        .filter((f) => f.key !== 'received' && f.key !== 'recharge_card' && f.key !== 'product_name')
+        .filter(
+          (f) =>
+            !['received', 'recharge_card', 'product_name', 'recharge_gold', 'recharge_ref'].includes(f.key)
+        )
         .map((f) => [f.key, f])
     );
     const fields = [];

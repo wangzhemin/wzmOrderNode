@@ -6,24 +6,6 @@ const { authRequired } = require('../middleware/auth');
 const router = express.Router();
 router.use(authRequired);
 
-// 校验充值金余额（排除当前订单自身已占用额度）
-async function assertRechargeBalance(rechargeId, used, excludeOrderId) {
-  const r = await pool.query('SELECT type, total FROM recharges WHERE id = $1', [rechargeId]);
-  if (r.rows.length === 0) {
-    throw new Error('所选充值金不存在');
-  }
-  const usedRes = await pool.query(
-    `SELECT COALESCE(SUM(recharge_used), 0) AS used FROM orders
-     WHERE recharge_id = $1 AND id <> $2`,
-    [rechargeId, excludeOrderId || '00000000-0000-0000-0000-000000000000']
-  );
-  const balance = Number(r.rows[0].total) - Number(usedRes.rows[0].used);
-  if (used > balance + 1e-9) {
-    throw new Error(`充值金「${r.rows[0].type}」余额不足，剩余 ${balance.toFixed(2)}`);
-  }
-  return r.rows[0];
-}
-
 // GET /api/orders?category_id=&shop=&account=&category_name=&date_from=&date_to=&status=&page=&pageSize=
 // status: active(默认,未出库) / pending / received / shipped / all
 router.get('/', async (req, res) => {
@@ -109,7 +91,6 @@ router.get('/', async (req, res) => {
 });
 
 // POST /api/orders  新增订单 { category_id, data }
-// data.recharge_ref = 充值金账户 id（可选），data.recharge_used = 使用金额
 router.post('/', async (req, res) => {
   try {
     const { category_id, data } = req.body || {};
@@ -128,25 +109,10 @@ router.post('/', async (req, res) => {
     for (const [k, v] of Object.entries(data)) {
       if (allowed.has(k) && v !== '' && v != null) clean[k] = v;
     }
-    // 充值金关联（可选）
-    let rechargeId = null;
-    let rechargeUsed = 0;
-    if (data.recharge_ref) {
-      rechargeId = String(data.recharge_ref);
-      rechargeUsed = Math.round((parseFloat(data.recharge_used) || 0) * 100) / 100;
-      if (rechargeUsed <= 0) {
-        return res.status(400).json({ code: 400, msg: '请输入充值金使用金额' });
-      }
-      try {
-        await assertRechargeBalance(rechargeId, rechargeUsed);
-      } catch (e) {
-        return res.status(400).json({ code: 400, msg: e.message });
-      }
-    }
     const { rows } = await pool.query(
-      `INSERT INTO orders (category_id, data, created_by, recharge_id, recharge_used)
-       VALUES ($1, $2, $3, $4, $5) RETURNING id, category_id, data, status, recharge_id, recharge_used, created_at`,
-      [category_id, JSON.stringify(clean), req.user.id, rechargeId, rechargeUsed]
+      `INSERT INTO orders (category_id, data, created_by) VALUES ($1, $2, $3)
+       RETURNING id, category_id, data, status, created_at`,
+      [category_id, JSON.stringify(clean), req.user.id]
     );
     res.json({ code: 0, msg: '新增成功', data: rows[0] });
   } catch (err) {
@@ -175,25 +141,10 @@ router.put('/:id', async (req, res) => {
     for (const [k, v] of Object.entries(data)) {
       if (allowed.has(k) && v !== '' && v != null) clean[k] = v;
     }
-    // 充值金关联（可选，修改时重新校验余额并替换关联）
-    let rechargeId = null;
-    let rechargeUsed = 0;
-    if (data.recharge_ref) {
-      rechargeId = String(data.recharge_ref);
-      rechargeUsed = Math.round((parseFloat(data.recharge_used) || 0) * 100) / 100;
-      if (rechargeUsed <= 0) {
-        return res.status(400).json({ code: 400, msg: '请输入充值金使用金额' });
-      }
-      try {
-        await assertRechargeBalance(rechargeId, rechargeUsed, req.params.id);
-      } catch (e) {
-        return res.status(400).json({ code: 400, msg: e.message });
-      }
-    }
     const { rows } = await pool.query(
-      `UPDATE orders SET data = $1, recharge_id = $2, recharge_used = $3, updated_at = NOW() WHERE id = $4
-       RETURNING id, category_id, data, status, recharge_id, recharge_used, created_at, updated_at`,
-      [JSON.stringify(clean), rechargeId, rechargeUsed, req.params.id]
+      `UPDATE orders SET data = $1, recharge_id = NULL, recharge_used = 0, updated_at = NOW() WHERE id = $2
+       RETURNING id, category_id, data, status, created_at, updated_at`,
+      [JSON.stringify(clean), req.params.id]
     );
     res.json({ code: 0, msg: '修改成功', data: rows[0] });
   } catch (err) {
