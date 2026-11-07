@@ -45,6 +45,10 @@ router.get('/', async (req, res) => {
     if (!req.user.isSuper) {
       params.push(req.user.family_id || '00000000-0000-0000-0000-000000000000');
       where.push(`u.family_id = $${params.length}`);
+      // 防御：超管不属于任何家庭，普通用户列表永远看不到超管
+      where.push(
+        `u.id NOT IN (SELECT ur.user_id FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE r.code = 'super_admin')`
+      );
     }
     if (keyword) {
       params.push(`%${keyword}%`);

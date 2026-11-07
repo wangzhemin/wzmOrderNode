@@ -69,4 +69,20 @@ router.get('/:id', async (req, res) => {
   }
 });
 
+// PUT /api/shipments/:id/payment  修改是否回款（发货时不填，回款后在出货记录里标记）
+router.put('/:id/payment', async (req, res) => {
+  try {
+    const { payment_received } = req.body || {};
+    const { rows } = await pool.query(
+      'UPDATE shipments SET payment_received = $1 WHERE id = $2 AND family_id = $3 RETURNING id, payment_received',
+      [payment_received === true, req.params.id, req.familyScope || '00000000-0000-0000-0000-000000000000']
+    );
+    if (rows.length === 0) return res.status(404).json({ code: 404, msg: '出货记录不存在' });
+    res.json({ code: 0, msg: '修改成功', data: rows[0] });
+  } catch (err) {
+    console.error('修改是否回款失败:', err.message);
+    res.status(500).json({ code: 500, msg: '服务器内部错误' });
+  }
+});
+
 module.exports = router;

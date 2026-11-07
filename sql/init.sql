@@ -108,6 +108,9 @@ ALTER TABLE public.recycle_items ADD COLUMN IF NOT EXISTS color text NOT NULL DE
 ALTER TABLE public.shipments ADD COLUMN IF NOT EXISTS shipper text NOT NULL DEFAULT '';
 ALTER TABLE public.shipments ADD COLUMN IF NOT EXISTS payment_received boolean NOT NULL DEFAULT false;
 ALTER TABLE public.shipments ADD COLUMN IF NOT EXISTS remark text NOT NULL DEFAULT '';
+ALTER TABLE public.shipments ADD COLUMN IF NOT EXISTS proxy_cost numeric(12,2) NOT NULL DEFAULT 0;
+ALTER TABLE public.shipments ADD COLUMN IF NOT EXISTS proxy_recovered numeric(12,2) NOT NULL DEFAULT 0;
+ALTER TABLE public.shipments ADD COLUMN IF NOT EXISTS proxy_profit numeric(12,2) NOT NULL DEFAULT 0;
 
 -- 出货记录（一次发货一条，含快递信息与利润快照）
 CREATE TABLE IF NOT EXISTS public.shipments (
@@ -119,6 +122,9 @@ CREATE TABLE IF NOT EXISTS public.shipments (
   total_recovered numeric(12,2) NOT NULL DEFAULT 0,
   total_profit    numeric(12,2) NOT NULL DEFAULT 0,
   order_count     integer     NOT NULL DEFAULT 0,
+  proxy_cost      numeric(12,2) NOT NULL DEFAULT 0,   -- 代收订单成本合计（不参与本家庭利润）
+  proxy_recovered numeric(12,2) NOT NULL DEFAULT 0,   -- 代收订单回收合计
+  proxy_profit    numeric(12,2) NOT NULL DEFAULT 0,   -- 代收订单利润合计（需还给对方）
   created_by      uuid,
   created_at      timestamptz NOT NULL DEFAULT NOW()
 );

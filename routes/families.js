@@ -65,6 +65,11 @@ router.post('/', requirePerm('families.manage'), async (req, res) => {
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
       [vals.name, vals.province, vals.city, vals.district, vals.street, vals.community, vals.house_no, vals.lng, vals.lat]
     );
+    // 每个家庭独立维护「账号」字典：新建家庭时自动创建空字典，账号由家庭主自行维护
+    await pool.query(
+      "INSERT INTO dict_types (name, family_id) VALUES ('账号', $1) ON CONFLICT DO NOTHING",
+      [rows[0].id]
+    );
     res.json({ code: 0, msg: '新增成功', data: rows[0] });
   } catch (err) {
     console.error('新增家庭失败:', err.message);

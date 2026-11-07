@@ -64,13 +64,22 @@ router.get('/', async (req, res) => {
     );
 
     // 合计：对所有匹配行按大类中 number 类型字段求和
+    // 代收订单单独一份合计（proxySums），不参与正常利润/成本合计
     const numberFields = (category.fields || []).filter((f) => f.type === 'number');
     const sums = {};
+    const proxySums = {};
     if (numberFields.length > 0 && total > 0) {
       const allRes = await pool.query(`SELECT data FROM orders ${whereSql}`, params.slice(0, -2));
+      const isProxy = (d) => d.is_proxy === '1' || d.is_proxy === true;
       for (const f of numberFields) {
-        sums[f.key] = allRes.rows.reduce((acc, r) => acc + (parseFloat(r.data[f.key]) || 0), 0);
+        sums[f.key] = allRes.rows.reduce(
+          (acc, r) => (isProxy(r.data) ? acc : acc + (parseFloat(r.data[f.key]) || 0)), 0
+        );
         sums[f.key] = Math.round(sums[f.key] * 100) / 100;
+        proxySums[f.key] = allRes.rows.reduce(
+          (acc, r) => (isProxy(r.data) ? acc + (parseFloat(r.data[f.key]) || 0) : acc), 0
+        );
+        proxySums[f.key] = Math.round(proxySums[f.key] * 100) / 100;
       }
     }
 
@@ -83,10 +92,36 @@ router.get('/', async (req, res) => {
         pageSize,
         category: { id: category.id, name: category.name, fields: category.fields },
         sums,
+        proxySums,
       },
     });
   } catch (err) {
     console.error('查询订单失败:', err.message);
+    res.status(500).json({ code: 500, msg: '服务器内部错误' });
+  }
+});
+
+// GET /api/orders/field-values?category_id=&key=shop|account
+// 订单动态字段去重值（筛选下拉 / 新增订单联想输入用）
+router.get('/field-values', async (req, res) => {
+  try {
+    const { category_id, key } = req.query;
+    // 白名单：只允许查询这两列，防止任意 key 拼进 SQL
+    if (!['shop', 'account'].includes(String(key))) {
+      return res.status(400).json({ code: 400, msg: '不支持的字段' });
+    }
+    if (!category_id) {
+      return res.status(400).json({ code: 400, msg: '缺少 category_id 参数' });
+    }
+    const { rows } = await pool.query(
+      `SELECT DISTINCT data->>'${key}' AS v FROM orders
+       WHERE category_id = $1 AND family_id = $2 AND COALESCE(data->>'${key}', '') <> ''
+       ORDER BY v LIMIT 500`,
+      [category_id, req.familyScope || '00000000-0000-0000-0000-000000000000']
+    );
+    res.json({ code: 0, data: { list: rows.map((r) => r.v) } });
+  } catch (err) {
+    console.error('查询字段去重值失败:', err.message);
     res.status(500).json({ code: 500, msg: '服务器内部错误' });
   }
 });
@@ -238,19 +273,34 @@ router.post('/ship', async (req, res) => {
       return res.status(400).json({ code: 400, msg: '选中的订单不存在或已出库' });
     }
 
+    // 正常订单与代收订单分开合计：代收不参与本家庭利润/成本，单独快照展示
     let totalCost = 0;
     let totalRecovered = 0;
+    let proxyCost = 0;
+    let proxyRecovered = 0;
     for (const o of orders) {
-      totalCost += parseFloat(o.data.order_cost) || 0;
-      totalRecovered += parseFloat(o.data.recycle_amount) || 0;
+      const isProxy = o.data.is_proxy === '1' || o.data.is_proxy === true;
+      const cost = parseFloat(o.data.order_cost) || 0;
+      const rec = parseFloat(o.data.recycle_amount) || 0;
+      if (isProxy) {
+        proxyCost += cost;
+        proxyRecovered += rec;
+        proxyCount++;
+      } else {
+        totalCost += cost;
+        totalRecovered += rec;
+      }
     }
     totalCost = Math.round(totalCost * 100) / 100;
     totalRecovered = Math.round(totalRecovered * 100) / 100;
     const totalProfit = Math.round((totalRecovered - totalCost - fee) * 100) / 100;
+    proxyCost = Math.round(proxyCost * 100) / 100;
+    proxyRecovered = Math.round(proxyRecovered * 100) / 100;
+    const proxyProfit = Math.round((proxyRecovered - proxyCost) * 100) / 100;
 
     const { rows: shipments } = await client.query(
-      `INSERT INTO shipments (express_company, express_no, express_fee, total_cost, total_recovered, total_profit, order_count, created_by, shipper, payment_received, remark, family_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
+      `INSERT INTO shipments (express_company, express_no, express_fee, total_cost, total_recovered, total_profit, order_count, created_by, shipper, payment_received, remark, family_id, proxy_cost, proxy_recovered, proxy_profit)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING *`,
       [
         String(express_company).trim(),
         String(express_no || '').trim(),
@@ -264,6 +314,9 @@ router.post('/ship', async (req, res) => {
         payment_received === true,
         String(remark || '').trim(),
         req.familyScope,
+        proxyCost,
+        proxyRecovered,
+        proxyProfit,
       ]
     );
     const shipment = shipments[0];

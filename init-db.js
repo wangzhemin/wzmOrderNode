@@ -20,6 +20,8 @@ const DEFAULT_FIELDS = [
   { key: 'latest_cost', label: '最终成本', type: 'number' },
   { key: 'recycle_amount', label: '回收', type: 'number' },
   { key: 'est_profit', label: '最终利润', type: 'number' },
+  { key: 'is_proxy', label: '代收', type: 'proxy' },
+  { key: 'remark', label: '备注', type: 'text' },
 ];
 
 // 字段标准 meta（key → label/type），迁移时按此统一标签
@@ -55,6 +57,15 @@ async function main() {
       WHERE f->>'key' <> 'received'
     )
     WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(fields) f WHERE f->>'key' = 'received')
+  `);
+  // 迁移：移除历史遗留的乱码 key 备注字段（重复的「备注」）
+  await pool.query(`
+    UPDATE categories SET fields = (
+      SELECT COALESCE(jsonb_agg(f), '[]'::jsonb)
+      FROM jsonb_array_elements(fields) f
+      WHERE f->>'key' <> 'f_mw636dw4uskk'
+    )
+    WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(fields) f WHERE f->>'key' = 'f_mw636dw4uskk')
   `);
 
   // 迁移：充值卡并入充值金（两列本是一个东西，统一叫充值金）
@@ -104,6 +115,7 @@ async function main() {
   // 权限点定义（code → 名称/模块）
   const PERMS = [
     ['families.manage', '家庭管理', '家庭'],
+    ['users.view', '用户查看', '用户'],
     ['users.manage', '用户管理', '用户'],
     ['orders.view', '订单查看', '订单'],
     ['orders.manage', '订单管理', '订单'],
@@ -178,9 +190,17 @@ async function main() {
   const myHomeId = fam.rows[0].id;
 
   // 存量业务数据归入「我家」
-  for (const table of ['categories', 'orders', 'shipments', 'recharges', 'recycle_items', 'dict_types']) {
+  for (const table of ['categories', 'orders', 'shipments', 'recharges', 'recycle_items']) {
     const r = await pool.query(`UPDATE ${table} SET family_id = $1 WHERE family_id IS NULL`, [myHomeId]);
     if (r.rowCount > 0) console.log(`  · ${table} 归入我家 ${r.rowCount} 行`);
+  }
+  // 字典类型单独归入：跳过全局字典（如「家庭关系」必须保持 family_id 为 NULL）
+  {
+    const r = await pool.query(
+      "UPDATE dict_types SET family_id = $1 WHERE family_id IS NULL AND name <> '家庭关系'",
+      [myHomeId]
+    );
+    if (r.rowCount > 0) console.log(`  · dict_types 归入我家 ${r.rowCount} 行`);
   }
 
   // 种子超级管理员 admin（有且只有一个）
@@ -211,7 +231,18 @@ async function main() {
   }
 
   // 原管理员账号 → 我家家庭主；其余无角色用户 → 我家成员
-  await pool.query('UPDATE users SET family_id = $1 WHERE family_id IS NULL', [myHomeId]);
+  // 超级管理员不属于任何家庭（跨家庭管理），排除在家庭分配之外
+  await pool.query(
+    `UPDATE users SET family_id = $1
+     WHERE family_id IS NULL
+       AND id NOT IN (SELECT ur.user_id FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE r.code = 'super_admin')`,
+    [myHomeId]
+  );
+  // 幂等修正：超管若已被分进家庭，强制移出
+  await pool.query(
+    `UPDATE users SET family_id = NULL
+     WHERE id IN (SELECT ur.user_id FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE r.code = 'super_admin')`
+  );
   const oldAdmin = await pool.query('SELECT id FROM users WHERE phone = $1', ['13800000001']);
   if (oldAdmin.rows.length > 0) {
     await pool.query('INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [
@@ -236,12 +267,16 @@ async function main() {
     '哥哥', '姐姐', '弟弟', '妹妹', '叔叔', '婶婶', '舅舅', '舅妈', '姑姑', '姑父',
     '侄子', '侄女', '外甥', '外甥女', '其他',
   ];
-  let relType = await pool.query('SELECT id FROM dict_types WHERE name = $1 AND family_id IS NULL', ['家庭关系']);
+  let relType = await pool.query("SELECT id, family_id FROM dict_types WHERE name = '家庭关系'");
   if (relType.rows.length === 0) {
     relType = await pool.query(
-      "INSERT INTO dict_types (name, family_id) VALUES ('家庭关系', NULL) RETURNING id"
+      "INSERT INTO dict_types (name, family_id) VALUES ('家庭关系', NULL) RETURNING id, family_id"
     );
     console.log('✅ 已创建全局字典种类: 家庭关系');
+  } else if (relType.rows[0].family_id !== null) {
+    // 幂等修正：家庭关系必须是全局字典（上面存量归入步骤可能把它误归入家庭）
+    await pool.query('UPDATE dict_types SET family_id = NULL WHERE id = $1', [relType.rows[0].id]);
+    console.log('✅ 家庭关系字典已修正为全局');
   }
   for (let i = 0; i < RELATIONS.length; i++) {
     const dup = await pool.query(
@@ -285,6 +320,16 @@ async function main() {
     );
   }
   console.log(`✅ 账号字典就绪（${orderAccounts.rows.length} 个账号来自现有订单）`);
+
+  // 兜底：确保每个家庭都有自己独立的「账号」字典（账号跟随家庭，各家庭互不可见）
+  const famsNoDict = await pool.query(
+    `SELECT f.id FROM families f
+     WHERE NOT EXISTS (SELECT 1 FROM dict_types t WHERE t.name = '账号' AND t.family_id = f.id)`
+  );
+  for (const r of famsNoDict.rows) {
+    await pool.query("INSERT INTO dict_types (name, family_id) VALUES ('账号', $1) ON CONFLICT DO NOTHING", [r.id]);
+  }
+  if (famsNoDict.rows.length > 0) console.log(`✅ 已为 ${famsNoDict.rows.length} 个家庭补齐「账号」字典`);
 
   // 种子大类：奶粉、美妆（字段默认同图中订单列）
   for (const name of ['奶粉', '美妆']) {

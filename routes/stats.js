@@ -15,24 +15,26 @@ const r2 = (v) => Math.round(n(v) * 100) / 100;
 router.get('/', async (req, res) => {
   try {
     const { category_id, from, to } = req.query;
-    const conds = [`o.data->>'prebuy_date' IS NOT NULL`, `o.data->>'prebuy_date' <> ''`];
+    // 基础条件：日期 + 家庭 + 筛选（正常订单与代收订单共用，params 一致）
+    const base = [`o.data->>'prebuy_date' IS NOT NULL`, `o.data->>'prebuy_date' <> ''`];
     const params = [];
-    // 家庭数据隔离
     params.push(req.familyScope || '00000000-0000-0000-0000-000000000000');
-    conds.push(`o.family_id = $${params.length}`);
+    base.push(`o.family_id = $${params.length}`);
     if (category_id) {
       params.push(String(category_id));
-      conds.push(`o.category_id = $${params.length}`);
+      base.push(`o.category_id = $${params.length}`);
     }
     if (from) {
       params.push(String(from));
-      conds.push(`o.data->>'prebuy_date' >= $${params.length}`);
+      base.push(`o.data->>'prebuy_date' >= $${params.length}`);
     }
     if (to) {
       params.push(String(to));
-      conds.push(`o.data->>'prebuy_date' <= $${params.length}`);
+      base.push(`o.data->>'prebuy_date' <= $${params.length}`);
     }
-    const where = 'WHERE ' + conds.join(' AND ');
+    // 代收订单不参与本家庭利润/成本统计；正常与代收各一份 WHERE
+    const where = 'WHERE ' + base.concat([`COALESCE(o.data->>'is_proxy', '') <> '1'`]).join(' AND ');
+    const whereProxy = 'WHERE ' + base.concat([`COALESCE(o.data->>'is_proxy', '') = '1'`]).join(' AND ');
 
     // 汇总：回收(总收入) / 最终成本 / 利润 / 订单数 等
     const sumRes = await pool.query(
@@ -47,6 +49,17 @@ router.get('/', async (req, res) => {
       params
     );
     const s = sumRes.rows[0];
+
+    // 代收订单单独统计（金额/成本/利润，需要单独结算还给对方）
+    const proxyRes = await pool.query(
+      `SELECT COUNT(*)::int AS order_count,
+              COALESCE(SUM(CASE WHEN o.data->>'recycle_amount' <> '' THEN (o.data->>'recycle_amount')::numeric ELSE 0 END), 0) AS recovered,
+              COALESCE(SUM(CASE WHEN o.data->>'latest_cost' <> '' THEN (o.data->>'latest_cost')::numeric ELSE 0 END), 0) AS cost,
+              COALESCE(SUM(CASE WHEN o.data->>'est_profit' <> '' THEN (o.data->>'est_profit')::numeric ELSE 0 END), 0) AS profit
+       FROM orders o ${whereProxy}`,
+      params
+    );
+    const ps = proxyRes.rows[0];
 
     // 每日趋势（回收 / 成本 / 利润 / 订单数）
     const dailyRes = await pool.query(
@@ -135,6 +148,12 @@ router.get('/', async (req, res) => {
           profit: r2(s.profit),
           order_amount: r2(s.order_amount),
           rebate: r2(s.rebate),
+          proxy: {
+            order_count: n(ps.order_count),
+            recovered: r2(ps.recovered),
+            cost: r2(ps.cost),
+            profit: r2(ps.profit),
+          },
         },
         daily: dailyRes.rows.map((d) => ({
           date: d.date,
