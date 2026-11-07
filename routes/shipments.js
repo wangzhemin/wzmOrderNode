@@ -11,7 +11,7 @@ router.get('/', async (req, res) => {
   try {
     const { express_no, date_from, date_to } = req.query;
     const page = Math.max(1, parseInt(req.query.page) || 1);
-    const pageSize = Math.min(100, Math.max(1, parseInt(req.query.pageSize) || 20));
+    const pageSize = Math.min(10000, Math.max(1, parseInt(req.query.pageSize) || 20));
 
     const where = [];
     const params = [];

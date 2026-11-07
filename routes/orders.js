@@ -23,7 +23,7 @@ router.get('/', async (req, res) => {
     const category = catRes.rows[0];
 
     const page = Math.max(1, parseInt(req.query.page) || 1);
-    const pageSize = Math.min(200, Math.max(1, parseInt(req.query.pageSize) || 20));
+    const pageSize = Math.min(10000, Math.max(1, parseInt(req.query.pageSize) || 20));
 
     const where = ['category_id = $1'];
     const params = [category_id];
