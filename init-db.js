@@ -105,20 +105,15 @@ async function main() {
     console.log(`✅ 已创建字典种类: ${dictName}`);
   }
   const dictTypeId = dictType.rows[0].id;
-  // 种子值 = 已知账号 + 现有订单里出现过的账号
-  const knownAccounts = ['橘子酱', '陈陈', '王哥', '橙子汁'];
+  // 种子值 = 现有订单里出现过的账号（新库没有订单时为空，账号在字典管理里自行维护）
   const orderAccounts = await pool.query(
     `SELECT DISTINCT data->>'account' AS name FROM orders
      WHERE data->>'account' IS NOT NULL AND data->>'account' <> ''`
   );
-  const accountSet = new Set([...knownAccounts, ...orderAccounts.rows.map((r) => r.name)]);
-  for (const acc of accountSet) {
-    const dup = await pool.query('SELECT id FROM dict_items WHERE type_id = $1 AND k = $2', [dictTypeId, acc]);
-    if (dup.rows.length === 0) {
-      await pool.query('INSERT INTO dict_items (type_id, k, v) VALUES ($1, $2, $2)', [dictTypeId, acc]);
-    }
+  for (const r of orderAccounts.rows) {
+    await pool.query('INSERT INTO dict_items (type_id, k, v) SELECT $1, $2, $2 WHERE NOT EXISTS (SELECT 1 FROM dict_items WHERE type_id = $1 AND k = $2)', [dictTypeId, r.name]);
   }
-  console.log(`✅ 账号字典就绪（${accountSet.size} 个账号）`);
+  console.log(`✅ 账号字典就绪（${orderAccounts.rows.length} 个账号来自现有订单）`);
 
   // 种子大类：奶粉、美妆（字段默认同图中订单列）
   for (const name of ['奶粉', '美妆']) {
