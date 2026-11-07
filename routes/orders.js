@@ -14,9 +14,10 @@ router.get('/', async (req, res) => {
     if (!category_id) {
       return res.status(400).json({ code: 400, msg: '缺少 category_id 参数' });
     }
-    const catRes = await pool.query('SELECT id, name, fields FROM categories WHERE id = $1', [
-      category_id,
-    ]);
+    const catRes = await pool.query(
+      'SELECT id, name, fields FROM categories WHERE id = $1 AND family_id = $2',
+      [category_id, req.familyScope || '00000000-0000-0000-0000-000000000000']
+    );
     if (catRes.rows.length === 0) {
       return res.status(404).json({ code: 404, msg: '大类不存在' });
     }
@@ -25,8 +26,8 @@ router.get('/', async (req, res) => {
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const pageSize = Math.min(10000, Math.max(1, parseInt(req.query.pageSize) || 20));
 
-    const where = ['category_id = $1'];
-    const params = [category_id];
+    const where = ['category_id = $1', 'family_id = $2'];
+    const params = [category_id, req.familyScope || '00000000-0000-0000-0000-000000000000'];
     function likeCond(field, value) {
       if (!value) return;
       params.push(`%${String(value).trim()}%`);
@@ -98,9 +99,10 @@ router.post('/', async (req, res) => {
     if (!data || typeof data !== 'object' || Array.isArray(data)) {
       return res.status(400).json({ code: 400, msg: '订单数据格式不正确' });
     }
-    const catRes = await pool.query('SELECT id, fields FROM categories WHERE id = $1', [
-      category_id,
-    ]);
+    const catRes = await pool.query(
+      'SELECT id, fields FROM categories WHERE id = $1 AND family_id = $2',
+      [category_id, req.familyScope || '00000000-0000-0000-0000-000000000000']
+    );
     if (catRes.rows.length === 0) {
       return res.status(404).json({ code: 404, msg: '大类不存在' });
     }
@@ -109,10 +111,13 @@ router.post('/', async (req, res) => {
     for (const [k, v] of Object.entries(data)) {
       if (allowed.has(k) && v !== '' && v != null) clean[k] = v;
     }
+    if (!req.familyScope) {
+      return res.status(400).json({ code: 400, msg: '请先选择家庭' });
+    }
     const { rows } = await pool.query(
-      `INSERT INTO orders (category_id, data, created_by) VALUES ($1, $2, $3)
+      `INSERT INTO orders (category_id, data, created_by, family_id) VALUES ($1, $2, $3, $4)
        RETURNING id, category_id, data, status, created_at`,
-      [category_id, JSON.stringify(clean), req.user.id]
+      [category_id, JSON.stringify(clean), req.user.id, req.familyScope]
     );
     res.json({ code: 0, msg: '新增成功', data: rows[0] });
   } catch (err) {
@@ -130,8 +135,9 @@ router.put('/:id', async (req, res) => {
     }
     const orderRes = await pool.query(
       `SELECT o.id, c.fields FROM orders o
-       JOIN categories c ON c.id = o.category_id WHERE o.id = $1`,
-      [req.params.id]
+       JOIN categories c ON c.id = o.category_id
+       WHERE o.id = $1 AND o.family_id = $2`,
+      [req.params.id, req.familyScope || '00000000-0000-0000-0000-000000000000']
     );
     if (orderRes.rows.length === 0) {
       return res.status(404).json({ code: 404, msg: '订单不存在' });
@@ -157,8 +163,8 @@ router.put('/:id', async (req, res) => {
 router.delete('/:id', async (req, res) => {
   try {
     const { rowCount } = await pool.query(
-      `DELETE FROM orders WHERE id = $1 AND status <> 'shipped'`,
-      [req.params.id]
+      `DELETE FROM orders WHERE id = $1 AND status <> 'shipped' AND family_id = $2`,
+      [req.params.id, req.familyScope || '00000000-0000-0000-0000-000000000000']
     );
     if (rowCount === 0) {
       return res.status(400).json({ code: 400, msg: '订单不存在或已出库，不能删除' });
@@ -179,8 +185,8 @@ router.post('/mark-received', async (req, res) => {
     }
     const { rows } = await pool.query(
       `UPDATE orders SET status = 'received', updated_at = NOW()
-       WHERE id = ANY($1::uuid[]) AND status = 'pending' RETURNING id`,
-      [order_ids]
+       WHERE id = ANY($1::uuid[]) AND status = 'pending' AND family_id = $2 RETURNING id`,
+      [order_ids, req.familyScope || '00000000-0000-0000-0000-000000000000']
     );
     res.json({ code: 0, msg: `已标记 ${rows.length} 笔订单为已收货`, data: { count: rows.length } });
   } catch (err) {
@@ -211,13 +217,17 @@ router.post('/ship', async (req, res) => {
     await client.query('BEGIN');
     // 只有「已收货」的订单才能发货，防止误选未收货订单
     const { rows: statusRows } = await client.query(
-      `SELECT id, status FROM orders WHERE id = ANY($1::uuid[]) FOR UPDATE`,
-      [order_ids]
+      `SELECT id, status FROM orders WHERE id = ANY($1::uuid[]) AND family_id = $2 FOR UPDATE`,
+      [order_ids, req.familyScope || '00000000-0000-0000-0000-000000000000']
     );
     const pendingCount = statusRows.filter((r) => r.status !== 'received').length;
     if (pendingCount > 0) {
       await client.query('ROLLBACK');
       return res.status(400).json({ code: 400, msg: '只有已收货的订单才能发货，请先收货再选择发货' });
+    }
+    if (statusRows.length !== order_ids.length) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ code: 400, msg: '选中的订单不存在或不属于当前家庭' });
     }
     const { rows: orders } = await client.query(
       `SELECT id, data FROM orders WHERE id = ANY($1::uuid[]) AND status = 'received' FOR UPDATE`,
@@ -239,8 +249,8 @@ router.post('/ship', async (req, res) => {
     const totalProfit = Math.round((totalRecovered - totalCost - fee) * 100) / 100;
 
     const { rows: shipments } = await client.query(
-      `INSERT INTO shipments (express_company, express_no, express_fee, total_cost, total_recovered, total_profit, order_count, created_by, shipper, payment_received, remark)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+      `INSERT INTO shipments (express_company, express_no, express_fee, total_cost, total_recovered, total_profit, order_count, created_by, shipper, payment_received, remark, family_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
       [
         String(express_company).trim(),
         String(express_no || '').trim(),
@@ -253,6 +263,7 @@ router.post('/ship', async (req, res) => {
         String(shipper || '').trim(),
         payment_received === true,
         String(remark || '').trim(),
+        req.familyScope,
       ]
     );
     const shipment = shipments[0];

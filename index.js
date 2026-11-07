@@ -5,9 +5,10 @@ const express = require('express');
 const cors = require('cors');
 
 const logger = require('./middleware/logger');
-const { authRequired } = require('./middleware/auth');
+const { authRequired, requirePerm } = require('./middleware/auth');
 const authRoutes = require('./routes/auth');
 const userRoutes = require('./routes/users');
+const familyRoutes = require('./routes/families');
 const dictRoutes = require('./routes/dicts');
 const categoryRoutes = require('./routes/categories');
 const orderRoutes = require('./routes/orders');
@@ -34,15 +35,21 @@ app.use('/api/auth', authRoutes);
 
 // 其余接口全部需要登录
 app.use('/api', authRequired);
-app.use('/api/users', userRoutes);
-app.use('/api/dicts', dictRoutes);
-app.use('/api/categories', categoryRoutes);
-app.use('/api/orders', orderRoutes);
-app.use('/api/shipments', shipmentRoutes);
-app.use('/api/recharges', rechargeRoutes);
-app.use('/api/recycle-items', recycleItemRoutes);
-app.use('/api/stats', statsRoutes);
-app.use('/api/logs', logRoutes);
+
+// 模块权限守卫：GET 走查看权限，写操作走管理权限
+const modPerm = (view, manage) => (req, res, next) =>
+  requirePerm(req.method === 'GET' ? view : manage)(req, res, next);
+
+app.use('/api/users', modPerm('users.view', 'users.manage'), userRoutes);
+app.use('/api/families', familyRoutes); // 路由内部控制（读：本人家庭；写：families.manage）
+app.use('/api/dicts', modPerm('dicts.view', 'dicts.manage'), dictRoutes);
+app.use('/api/categories', modPerm('categories.view', 'categories.manage'), categoryRoutes);
+app.use('/api/orders', modPerm('orders.view', 'orders.manage'), orderRoutes);
+app.use('/api/shipments', modPerm('shipments.view', 'shipments.manage'), shipmentRoutes);
+app.use('/api/recharges', modPerm('recharges.view', 'recharges.manage'), rechargeRoutes);
+app.use('/api/recycle-items', modPerm('recycle.view', 'recycle.manage'), recycleItemRoutes);
+app.use('/api/stats', modPerm('dashboard.view', 'dashboard.view'), statsRoutes);
+app.use('/api/logs', modPerm('logs.view', 'logs.view'), logRoutes);
 
 // ===== 前端静态托管（打包后的 web/dist 复制到 node/dist）=====
 const DIST_DIR = path.join(__dirname, 'dist');

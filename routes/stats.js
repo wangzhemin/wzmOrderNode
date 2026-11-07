@@ -17,6 +17,9 @@ router.get('/', async (req, res) => {
     const { category_id, from, to } = req.query;
     const conds = [`o.data->>'prebuy_date' IS NOT NULL`, `o.data->>'prebuy_date' <> ''`];
     const params = [];
+    // 家庭数据隔离
+    params.push(req.familyScope || '00000000-0000-0000-0000-000000000000');
+    conds.push(`o.family_id = $${params.length}`);
     if (category_id) {
       params.push(String(category_id));
       conds.push(`o.category_id = $${params.length}`);
@@ -101,9 +104,9 @@ router.get('/', async (req, res) => {
       params
     );
 
-    // 出货统计（按出货时间筛同样区间）
-    const shipConds = ['1=1'];
-    const shipParams = [];
+    // 出货统计（按出货时间筛同样区间，限本家庭）
+    const shipConds = ['family_id = $1'];
+    const shipParams = [req.familyScope || '00000000-0000-0000-0000-000000000000'];
     if (from) {
       shipParams.push(String(from));
       shipConds.push(`created_at::date >= $${shipParams.length}`);

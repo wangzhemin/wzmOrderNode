@@ -16,10 +16,15 @@ const BALANCE_SQL = `
   ) u ON u.recharge_id = r.id
 `;
 
-// GET /api/recharges  列表（含已用、余额）
+// 家庭过滤参数（无家庭范围时用零值 uuid，查不到任何数据）
+const fam = (req) => req.familyScope || '00000000-0000-0000-0000-000000000000';
+
+// GET /api/recharges  列表（含已用、余额，限本家庭）
 router.get('/', async (req, res) => {
   try {
-    const { rows } = await pool.query(`${BALANCE_SQL} ORDER BY r.created_at DESC`);
+    const { rows } = await pool.query(`${BALANCE_SQL} WHERE r.family_id = $1 ORDER BY r.created_at DESC`, [
+      fam(req),
+    ]);
     res.json({ code: 0, data: { list: rows } });
   } catch (err) {
     console.error('查询充值金失败:', err.message);
@@ -39,11 +44,17 @@ router.post('/', async (req, res) => {
     if (isNaN(amt) || amt < 0) {
       return res.status(400).json({ code: 400, msg: '金额不正确' });
     }
+    if (!req.familyScope) {
+      return res.status(400).json({ code: 400, msg: '请先选择家庭' });
+    }
     const { rows } = await pool.query(
-      'INSERT INTO recharges (type, amount, bonus, total, remark) VALUES ($1, $2, $3, $4, $5) RETURNING id',
-      [String(type).trim(), amt, bon, Math.round((amt + bon) * 100) / 100, String(remark || '').trim()]
+      'INSERT INTO recharges (type, amount, bonus, total, remark, family_id) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
+      [String(type).trim(), amt, bon, Math.round((amt + bon) * 100) / 100, String(remark || '').trim(), req.familyScope]
     );
-    const created = await pool.query(`${BALANCE_SQL} WHERE r.id = $1`, [rows[0].id]);
+    const created = await pool.query(`${BALANCE_SQL} WHERE r.id = $1 AND r.family_id = $2`, [
+      rows[0].id,
+      fam(req),
+    ]);
     res.json({ code: 0, msg: '新增成功', data: created.rows[0] });
   } catch (err) {
     console.error('新增充值金失败:', err.message);
@@ -73,11 +84,14 @@ router.put('/:id', async (req, res) => {
       return res.status(400).json({ code: 400, msg: `得到的金额不能小于已使用金额（${used}）` });
     }
     const { rowCount } = await pool.query(
-      'UPDATE recharges SET type = $1, amount = $2, bonus = $3, total = $4, remark = $5 WHERE id = $6',
-      [String(type).trim(), amt, bon, total, String(remark || '').trim(), req.params.id]
+      'UPDATE recharges SET type = $1, amount = $2, bonus = $3, total = $4, remark = $5 WHERE id = $6 AND family_id = $7',
+      [String(type).trim(), amt, bon, total, String(remark || '').trim(), req.params.id, fam(req)]
     );
     if (rowCount === 0) return res.status(404).json({ code: 404, msg: '充值金不存在' });
-    const updated = await pool.query(`${BALANCE_SQL} WHERE r.id = $1`, [req.params.id]);
+    const updated = await pool.query(`${BALANCE_SQL} WHERE r.id = $1 AND r.family_id = $2`, [
+      req.params.id,
+      fam(req),
+    ]);
     res.json({ code: 0, msg: '修改成功', data: updated.rows[0] });
   } catch (err) {
     console.error('修改充值金失败:', err.message);
@@ -89,13 +103,16 @@ router.put('/:id', async (req, res) => {
 router.delete('/:id', async (req, res) => {
   try {
     const used = await pool.query(
-      'SELECT COUNT(*) AS n FROM orders WHERE recharge_id = $1',
-      [req.params.id]
+      'SELECT COUNT(*) AS n FROM orders o JOIN recharges r ON r.id = o.recharge_id WHERE o.recharge_id = $1 AND r.family_id = $2',
+      [req.params.id, fam(req)]
     );
     if (Number(used.rows[0].n) > 0) {
       return res.status(400).json({ code: 400, msg: '该充值金已被订单使用，不能删除' });
     }
-    const { rowCount } = await pool.query('DELETE FROM recharges WHERE id = $1', [req.params.id]);
+    const { rowCount } = await pool.query(
+      'DELETE FROM recharges WHERE id = $1 AND family_id = $2',
+      [req.params.id, fam(req)]
+    );
     if (rowCount === 0) return res.status(404).json({ code: 404, msg: '充值金不存在' });
     res.json({ code: 0, msg: '删除成功' });
   } catch (err) {
@@ -109,9 +126,10 @@ router.get('/:id/usage', async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT o.id, o.data, o.status, o.recharge_used, o.created_at
-       FROM orders o WHERE o.recharge_id = $1
+       FROM orders o JOIN recharges r ON r.id = o.recharge_id
+       WHERE o.recharge_id = $1 AND r.family_id = $2
        ORDER BY o.created_at DESC`,
-      [req.params.id]
+      [req.params.id, fam(req)]
     );
     res.json({ code: 0, data: { list: rows } });
   } catch (err) {

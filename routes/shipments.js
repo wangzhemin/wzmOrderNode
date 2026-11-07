@@ -13,8 +13,8 @@ router.get('/', async (req, res) => {
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const pageSize = Math.min(10000, Math.max(1, parseInt(req.query.pageSize) || 20));
 
-    const where = [];
-    const params = [];
+    const where = ['s.family_id = $1'];
+    const params = [req.familyScope || '00000000-0000-0000-0000-000000000000'];
     if (express_no) {
       params.push(`%${String(express_no).trim()}%`);
       where.push(`s.express_no ILIKE $${params.length}`);
@@ -50,7 +50,10 @@ router.get('/', async (req, res) => {
 // GET /api/shipments/:id  出货详情（含关联订单快照）
 router.get('/:id', async (req, res) => {
   try {
-    const { rows } = await pool.query('SELECT * FROM shipments WHERE id = $1', [req.params.id]);
+    const { rows } = await pool.query('SELECT * FROM shipments WHERE id = $1 AND family_id = $2', [
+      req.params.id,
+      req.familyScope || '00000000-0000-0000-0000-000000000000',
+    ]);
     if (rows.length === 0) {
       return res.status(404).json({ code: 404, msg: '出货记录不存在' });
     }

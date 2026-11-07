@@ -13,8 +13,8 @@ router.get('/', async (req, res) => {
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const pageSize = Math.min(100, Math.max(1, parseInt(req.query.pageSize) || 20));
 
-    const where = [];
-    const params = [];
+    const where = ['(family_id = $1 OR family_id IS NULL)'];
+    const params = [req.familyScope || '00000000-0000-0000-0000-000000000000'];
     if (user_name) {
       params.push(`%${String(user_name).trim()}%`);
       where.push(`user_name ILIKE $${params.length}`);

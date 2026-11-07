@@ -16,8 +16,8 @@ function logger(req, res, next) {
     const user = req.user || null;
     pool
       .query(
-        `INSERT INTO op_logs (user_id, user_name, method, path, status, ip, cost_ms)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        `INSERT INTO op_logs (user_id, user_name, method, path, status, ip, cost_ms, family_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
         [
           user ? user.id : null,
           user ? user.name : (req.body && req.body.phone) || '未登录',
@@ -26,6 +26,7 @@ function logger(req, res, next) {
           res.statusCode,
           req.ip,
           Date.now() - start,
+          user ? user.family_id : null,
         ]
       )
       .catch((err) => console.error('日志写入失败:', err.message));

@@ -133,3 +133,89 @@ CREATE TABLE IF NOT EXISTS public.shipment_orders (
 );
 CREATE INDEX IF NOT EXISTS idx_shipment_orders_ship ON public.shipment_orders(shipment_id);
 COMMENT ON TABLE public.shipment_orders IS '出货记录关联订单快照';
+
+-- ============================================================
+-- 家庭管理与 RBAC 权限体系
+-- ============================================================
+
+-- 家庭（数据隔离的最小单位）
+CREATE TABLE IF NOT EXISTS public.families (
+  id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name       text        NOT NULL,
+  province   text        NOT NULL DEFAULT '',   -- 省
+  city       text        NOT NULL DEFAULT '',   -- 市
+  district   text        NOT NULL DEFAULT '',   -- 区县
+  street     text        NOT NULL DEFAULT '',   -- 乡镇街道
+  community  text        NOT NULL DEFAULT '',   -- 小区
+  house_no   text        NOT NULL DEFAULT '',   -- 门牌号
+  lng        double precision,                  -- 经度
+  lat        double precision,                  -- 纬度
+  created_at timestamptz NOT NULL DEFAULT NOW()
+);
+COMMENT ON TABLE public.families IS '家庭（组织单元）';
+
+-- 角色
+CREATE TABLE IF NOT EXISTS public.roles (
+  id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  code       text        NOT NULL UNIQUE,       -- super_admin / family_head / family_member
+  name       text        NOT NULL,
+  is_system  boolean     NOT NULL DEFAULT false,
+  created_at timestamptz NOT NULL DEFAULT NOW()
+);
+COMMENT ON TABLE public.roles IS '角色（系统内置三种，不可删除）';
+
+-- 权限点（按模块划分）
+CREATE TABLE IF NOT EXISTS public.permissions (
+  code   text PRIMARY KEY,
+  name   text NOT NULL,
+  module text NOT NULL DEFAULT ''
+);
+COMMENT ON TABLE public.permissions IS '权限点';
+
+-- 角色-权限
+CREATE TABLE IF NOT EXISTS public.role_permissions (
+  role_id   uuid NOT NULL REFERENCES public.roles(id) ON DELETE CASCADE,
+  perm_code text NOT NULL REFERENCES public.permissions(code) ON DELETE CASCADE,
+  PRIMARY KEY (role_id, perm_code)
+);
+COMMENT ON TABLE public.role_permissions IS '角色与权限关联';
+
+-- 用户-角色
+CREATE TABLE IF NOT EXISTS public.user_roles (
+  user_id uuid NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+  role_id uuid NOT NULL REFERENCES public.roles(id) ON DELETE CASCADE,
+  PRIMARY KEY (user_id, role_id)
+);
+COMMENT ON TABLE public.user_roles IS '用户与角色关联';
+
+-- 兼容旧库：users 补充家庭、与户主关系
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS family_id uuid REFERENCES public.families(id) ON DELETE SET NULL;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS relation text NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_users_family ON public.users(family_id);
+
+-- 兼容旧库：业务表补充家庭列（orders/shipments/recharges/recycle_items 随家庭级联删除，日志置空）
+ALTER TABLE public.categories    ADD COLUMN IF NOT EXISTS family_id uuid REFERENCES public.families(id) ON DELETE CASCADE;
+ALTER TABLE public.orders        ADD COLUMN IF NOT EXISTS family_id uuid REFERENCES public.families(id) ON DELETE CASCADE;
+ALTER TABLE public.shipments     ADD COLUMN IF NOT EXISTS family_id uuid REFERENCES public.families(id) ON DELETE CASCADE;
+ALTER TABLE public.recharges     ADD COLUMN IF NOT EXISTS family_id uuid REFERENCES public.families(id) ON DELETE CASCADE;
+ALTER TABLE public.recycle_items ADD COLUMN IF NOT EXISTS family_id uuid REFERENCES public.families(id) ON DELETE CASCADE;
+ALTER TABLE public.op_logs       ADD COLUMN IF NOT EXISTS family_id uuid;
+ALTER TABLE public.dict_types    ADD COLUMN IF NOT EXISTS family_id uuid REFERENCES public.families(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS idx_categories_family    ON public.categories(family_id);
+CREATE INDEX IF NOT EXISTS idx_orders_family        ON public.orders(family_id);
+CREATE INDEX IF NOT EXISTS idx_shipments_family     ON public.shipments(family_id);
+CREATE INDEX IF NOT EXISTS idx_recharges_family     ON public.recharges(family_id);
+CREATE INDEX IF NOT EXISTS idx_recycle_items_family ON public.recycle_items(family_id);
+CREATE INDEX IF NOT EXISTS idx_op_logs_family       ON public.op_logs(family_id);
+CREATE INDEX IF NOT EXISTS idx_dict_types_family    ON public.dict_types(family_id);
+
+-- 名称唯一约束改为「家庭内唯一」（全局字典 family_id 为 NULL 视为一个虚拟组）
+ALTER TABLE public.categories DROP CONSTRAINT IF EXISTS categories_name_key;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_categories_scope
+  ON public.categories (COALESCE(family_id, '00000000-0000-0000-0000-000000000000'::uuid), name);
+ALTER TABLE public.recycle_items DROP CONSTRAINT IF EXISTS recycle_items_name_key;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_recycle_items_scope
+  ON public.recycle_items (COALESCE(family_id, '00000000-0000-0000-0000-000000000000'::uuid), name);
+ALTER TABLE public.dict_types DROP CONSTRAINT IF EXISTS dict_types_name_key;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_dict_types_scope
+  ON public.dict_types (COALESCE(family_id, '00000000-0000-0000-0000-000000000000'::uuid), name);
