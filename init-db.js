@@ -97,6 +97,29 @@ async function main() {
   }
   console.log('✅ 大类字段迁移完成');
 
+  // 种子字典：账号（新增订单时从字典里选）
+  const dictName = '账号';
+  let dictType = await pool.query('SELECT id FROM dict_types WHERE name = $1', [dictName]);
+  if (dictType.rows.length === 0) {
+    dictType = await pool.query('INSERT INTO dict_types (name) VALUES ($1) RETURNING id', [dictName]);
+    console.log(`✅ 已创建字典种类: ${dictName}`);
+  }
+  const dictTypeId = dictType.rows[0].id;
+  // 种子值 = 已知账号 + 现有订单里出现过的账号
+  const knownAccounts = ['橘子酱', '陈陈', '王哥', '橙子汁'];
+  const orderAccounts = await pool.query(
+    `SELECT DISTINCT data->>'account' AS name FROM orders
+     WHERE data->>'account' IS NOT NULL AND data->>'account' <> ''`
+  );
+  const accountSet = new Set([...knownAccounts, ...orderAccounts.rows.map((r) => r.name)]);
+  for (const acc of accountSet) {
+    const dup = await pool.query('SELECT id FROM dict_items WHERE type_id = $1 AND k = $2', [dictTypeId, acc]);
+    if (dup.rows.length === 0) {
+      await pool.query('INSERT INTO dict_items (type_id, k, v) VALUES ($1, $2, $2)', [dictTypeId, acc]);
+    }
+  }
+  console.log(`✅ 账号字典就绪（${accountSet.size} 个账号）`);
+
   // 种子大类：奶粉、美妆（字段默认同图中订单列）
   for (const name of ['奶粉', '美妆']) {
     const existCat = await pool.query('SELECT id FROM categories WHERE name = $1', [name]);

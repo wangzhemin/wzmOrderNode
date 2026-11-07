@@ -85,6 +85,22 @@ router.delete('/:id', async (req, res) => {
 
 // ---------- 字典键值对 ----------
 
+// GET /api/dicts/name/:name/items  按种类名称取键值对（订单表单下拉用）
+router.get('/name/:name/items', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT i.id, i.type_id, i.k, i.v, i.sort
+       FROM dict_items i JOIN dict_types t ON t.id = i.type_id
+       WHERE t.name = $1 ORDER BY i.sort, i.created_at`,
+      [req.params.name]
+    );
+    res.json({ code: 0, data: { list: rows } });
+  } catch (err) {
+    console.error('按名称查询字典键值对失败:', err.message);
+    res.status(500).json({ code: 500, msg: '服务器内部错误' });
+  }
+});
+
 // GET /api/dicts/:typeId/items  某种类下的键值对列表
 router.get('/:typeId/items', async (req, res) => {
   try {
