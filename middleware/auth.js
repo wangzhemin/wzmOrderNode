@@ -53,6 +53,13 @@ async function authRequired(req, res, next) {
     // 家庭数据范围：超管可通过 x-family-id 头切换查看任意家庭；普通用户固定本家庭
     const headerFamily = req.get('x-family-id');
     req.familyScope = u.isSuper && headerFamily ? headerFamily : u.family_id;
+    // 超管未选择家庭时，默认归属「我家」，保证 admin 能直接录入/查看数据
+    if (!req.familyScope) {
+      const f = await pool.query(
+        "SELECT id FROM families WHERE name = '我家' ORDER BY created_at LIMIT 1"
+      );
+      req.familyScope = f.rows.length > 0 ? f.rows[0].id : null;
+    }
     next();
   } catch (err) {
     console.error('认证失败:', err.message);

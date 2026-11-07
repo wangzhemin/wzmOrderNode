@@ -26,7 +26,7 @@ router.get('/', async (req, res) => {
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const pageSize = Math.min(10000, Math.max(1, parseInt(req.query.pageSize) || 20));
 
-    const where = ['category_id = $1', 'family_id = $2'];
+    const where = ['o.category_id = $1', 'o.family_id = $2'];
     const params = [category_id, req.familyScope || '00000000-0000-0000-0000-000000000000'];
     function likeCond(field, value) {
       if (!value) return;
@@ -46,20 +46,27 @@ router.get('/', async (req, res) => {
     }
     const status = String(req.query.status || 'active');
     if (status === 'active') {
-      where.push(`status <> 'shipped'`);
+      where.push(`o.status <> 'shipped'`);
     } else if (['pending', 'received', 'shipped'].includes(status)) {
       params.push(status);
-      where.push(`status = $${params.length}`);
+      where.push(`o.status = $${params.length}`);
     }
     const whereSql = 'WHERE ' + where.join(' AND ');
 
-    const countRes = await pool.query(`SELECT COUNT(*) AS total FROM orders ${whereSql}`, params);
+    // 排序方向：asc=正序（旧在前），默认 desc=倒序（新在前）
+    const sortDir = String(req.query.sort).toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+
+    const countRes = await pool.query(`SELECT COUNT(*) AS total FROM orders o ${whereSql}`, params);
     const total = Number(countRes.rows[0].total);
 
     params.push(pageSize, (page - 1) * pageSize);
     const { rows } = await pool.query(
-      `SELECT id, category_id, data, status, recharge_id, recharge_used, shipment_id, created_at, updated_at FROM orders ${whereSql}
-       ORDER BY created_at DESC LIMIT $${params.length - 1} OFFSET $${params.length}`,
+      `SELECT o.id, o.category_id, o.data, o.status, o.recharge_id, o.recharge_used, o.shipment_id,
+              o.created_by, u.name AS created_by_name, o.created_at, o.updated_at
+       FROM orders o
+       LEFT JOIN users u ON u.id = o.created_by
+       ${whereSql}
+       ORDER BY o.created_at ${sortDir} LIMIT $${params.length - 1} OFFSET $${params.length}`,
       params
     );
 
@@ -69,7 +76,7 @@ router.get('/', async (req, res) => {
     const sums = {};
     const proxySums = {};
     if (numberFields.length > 0 && total > 0) {
-      const allRes = await pool.query(`SELECT data FROM orders ${whereSql}`, params.slice(0, -2));
+      const allRes = await pool.query(`SELECT data FROM orders o ${whereSql}`, params.slice(0, -2));
       const isProxy = (d) => d.is_proxy === '1' || d.is_proxy === true;
       for (const f of numberFields) {
         sums[f.key] = allRes.rows.reduce(
@@ -161,15 +168,19 @@ router.post('/', async (req, res) => {
   }
 });
 
-// PUT /api/orders/:id  修改订单 { data }
+// PUT /api/orders/:id  修改订单 { data?, status? }
+// status 只允许 pending/received 互转；已出库订单不能在此改状态（需走出货流程管理）
 router.put('/:id', async (req, res) => {
   try {
-    const { data } = req.body || {};
-    if (!data || typeof data !== 'object' || Array.isArray(data)) {
-      return res.status(400).json({ code: 400, msg: '订单数据格式不正确' });
+    const { data, status } = req.body || {};
+    if (status !== undefined && !['pending', 'received'].includes(status)) {
+      return res.status(400).json({ code: 400, msg: '状态值不正确（已出库需走发货流程）' });
+    }
+    if ((data === undefined || data === null) && status === undefined) {
+      return res.status(400).json({ code: 400, msg: '没有需要修改的内容' });
     }
     const orderRes = await pool.query(
-      `SELECT o.id, c.fields FROM orders o
+      `SELECT o.id, o.status AS cur_status, c.fields FROM orders o
        JOIN categories c ON c.id = o.category_id
        WHERE o.id = $1 AND o.family_id = $2`,
       [req.params.id, req.familyScope || '00000000-0000-0000-0000-000000000000']
@@ -177,15 +188,35 @@ router.put('/:id', async (req, res) => {
     if (orderRes.rows.length === 0) {
       return res.status(404).json({ code: 404, msg: '订单不存在' });
     }
-    const allowed = new Set((orderRes.rows[0].fields || []).map((f) => f.key));
-    const clean = {};
-    for (const [k, v] of Object.entries(data)) {
-      if (allowed.has(k) && v !== '' && v != null) clean[k] = v;
+    const order = orderRes.rows[0];
+    if (order.cur_status === 'shipped' && status !== undefined && status !== order.cur_status) {
+      return res.status(400).json({ code: 400, msg: '已出库订单不能修改状态' });
     }
+
+    const sets = [];
+    const updParams = [];
+    if (data !== undefined && data !== null) {
+      if (typeof data !== 'object' || Array.isArray(data)) {
+        return res.status(400).json({ code: 400, msg: '订单数据格式不正确' });
+      }
+      const allowed = new Set((order.fields || []).map((f) => f.key));
+      const clean = {};
+      for (const [k, v] of Object.entries(data)) {
+        if (allowed.has(k) && v !== '' && v != null) clean[k] = v;
+      }
+      updParams.push(JSON.stringify(clean));
+      sets.push(`data = $${updParams.length}`, 'recharge_id = NULL', 'recharge_used = 0');
+    }
+    if (status !== undefined) {
+      updParams.push(status);
+      sets.push(`status = $${updParams.length}`);
+    }
+    sets.push('updated_at = NOW()');
+    updParams.push(req.params.id);
     const { rows } = await pool.query(
-      `UPDATE orders SET data = $1, recharge_id = NULL, recharge_used = 0, updated_at = NOW() WHERE id = $2
+      `UPDATE orders SET ${sets.join(', ')} WHERE id = $${updParams.length}
        RETURNING id, category_id, data, status, created_at, updated_at`,
-      [JSON.stringify(clean), req.params.id]
+      updParams
     );
     res.json({ code: 0, msg: '修改成功', data: rows[0] });
   } catch (err) {
@@ -285,7 +316,6 @@ router.post('/ship', async (req, res) => {
       if (isProxy) {
         proxyCost += cost;
         proxyRecovered += rec;
-        proxyCount++;
       } else {
         totalCost += cost;
         totalRecovered += rec;

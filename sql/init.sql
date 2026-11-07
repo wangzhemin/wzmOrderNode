@@ -107,6 +107,7 @@ ALTER TABLE public.recycle_items ADD COLUMN IF NOT EXISTS color text NOT NULL DE
 -- 出货记录兼容旧库：补充新增列
 ALTER TABLE public.shipments ADD COLUMN IF NOT EXISTS shipper text NOT NULL DEFAULT '';
 ALTER TABLE public.shipments ADD COLUMN IF NOT EXISTS payment_received boolean NOT NULL DEFAULT false;
+ALTER TABLE public.shipments ADD COLUMN IF NOT EXISTS actual_amount numeric(12,2);  -- 实际回款金额（降价/核损后与回收价不同，回款后填写）
 ALTER TABLE public.shipments ADD COLUMN IF NOT EXISTS remark text NOT NULL DEFAULT '';
 ALTER TABLE public.shipments ADD COLUMN IF NOT EXISTS proxy_cost numeric(12,2) NOT NULL DEFAULT 0;
 ALTER TABLE public.shipments ADD COLUMN IF NOT EXISTS proxy_recovered numeric(12,2) NOT NULL DEFAULT 0;
@@ -120,6 +121,7 @@ CREATE TABLE IF NOT EXISTS public.shipments (
   express_fee     numeric(12,2) NOT NULL DEFAULT 0,
   total_cost      numeric(12,2) NOT NULL DEFAULT 0,
   total_recovered numeric(12,2) NOT NULL DEFAULT 0,
+  actual_amount   numeric(12,2),                      -- 实际回款金额（降价/核损后与回收价不同）
   total_profit    numeric(12,2) NOT NULL DEFAULT 0,
   order_count     integer     NOT NULL DEFAULT 0,
   proxy_cost      numeric(12,2) NOT NULL DEFAULT 0,   -- 代收订单成本合计（不参与本家庭利润）

@@ -34,9 +34,7 @@ router.get('/', async (req, res) => {
 
     params.push(pageSize, (page - 1) * pageSize);
     const { rows } = await pool.query(
-      `SELECT s.id, s.express_company, s.express_no, s.express_fee, s.total_cost,
-              s.total_recovered, s.total_profit, s.order_count, s.created_at
-       FROM shipments s ${whereSql}
+      `SELECT s.* FROM shipments s ${whereSql}
        ORDER BY s.created_at DESC LIMIT $${params.length - 1} OFFSET $${params.length}`,
       params
     );
@@ -69,18 +67,43 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// PUT /api/shipments/:id/payment  修改是否回款（发货时不填，回款后在出货记录里标记）
+// PUT /api/shipments/:id/payment  修改回款信息（发货时不填，回款后在出货记录里标记）
+// { payment_received?: boolean, actual_amount?: number|null }
+// actual_amount = 实际回款金额（商品降价/核损后与回收价不同），null 表示清空
 router.put('/:id/payment', async (req, res) => {
   try {
-    const { payment_received } = req.body || {};
+    const { payment_received, actual_amount } = req.body || {};
+    if (payment_received === undefined && actual_amount === undefined) {
+      return res.status(400).json({ code: 400, msg: '请提供要修改的回款信息' });
+    }
+    let amountSql = '';
+    const params = [];
+    if (payment_received !== undefined) {
+      params.push(payment_received === true);
+      amountSql += `payment_received = $${params.length}`;
+    }
+    if (actual_amount !== undefined) {
+      if (actual_amount !== null) {
+        const n = Number(actual_amount);
+        if (isNaN(n) || n < 0) {
+          return res.status(400).json({ code: 400, msg: '实际回款金额不正确' });
+        }
+        params.push(n);
+      } else {
+        params.push(null);
+      }
+      amountSql += (amountSql ? ', ' : '') + `actual_amount = $${params.length}`;
+    }
+    params.push(req.params.id, req.familyScope || '00000000-0000-0000-0000-000000000000');
     const { rows } = await pool.query(
-      'UPDATE shipments SET payment_received = $1 WHERE id = $2 AND family_id = $3 RETURNING id, payment_received',
-      [payment_received === true, req.params.id, req.familyScope || '00000000-0000-0000-0000-000000000000']
+      `UPDATE shipments SET ${amountSql} WHERE id = $${params.length - 1} AND family_id = $${params.length}
+       RETURNING id, payment_received, actual_amount`,
+      params
     );
     if (rows.length === 0) return res.status(404).json({ code: 404, msg: '出货记录不存在' });
     res.json({ code: 0, msg: '修改成功', data: rows[0] });
   } catch (err) {
-    console.error('修改是否回款失败:', err.message);
+    console.error('修改回款信息失败:', err.message);
     res.status(500).json({ code: 500, msg: '服务器内部错误' });
   }
 });
