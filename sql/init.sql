@@ -112,10 +112,15 @@ ALTER TABLE public.shipments ADD COLUMN IF NOT EXISTS remark text NOT NULL DEFAU
 ALTER TABLE public.shipments ADD COLUMN IF NOT EXISTS proxy_cost numeric(12,2) NOT NULL DEFAULT 0;
 ALTER TABLE public.shipments ADD COLUMN IF NOT EXISTS proxy_recovered numeric(12,2) NOT NULL DEFAULT 0;
 ALTER TABLE public.shipments ADD COLUMN IF NOT EXISTS proxy_profit numeric(12,2) NOT NULL DEFAULT 0;
+-- 出货单号（种类 + 出货时间 + 随机数生成）与商品种类数量明细
+ALTER TABLE public.shipments ADD COLUMN IF NOT EXISTS shipment_no text;
+ALTER TABLE public.shipments ADD COLUMN IF NOT EXISTS category_counts jsonb NOT NULL DEFAULT '[]'::jsonb;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_shipments_no ON public.shipments(shipment_no) WHERE shipment_no IS NOT NULL;
 
 -- 出货记录（一次发货一条，含快递信息与利润快照）
 CREATE TABLE IF NOT EXISTS public.shipments (
   id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  shipment_no     text,                                -- 出货单号（种类+出货时间+随机数）
   express_company text        NOT NULL,
   express_no      text        NOT NULL DEFAULT '',
   express_fee     numeric(12,2) NOT NULL DEFAULT 0,
@@ -124,6 +129,7 @@ CREATE TABLE IF NOT EXISTS public.shipments (
   actual_amount   numeric(12,2),                      -- 实际回款金额（降价/核损后与回收价不同）
   total_profit    numeric(12,2) NOT NULL DEFAULT 0,
   order_count     integer     NOT NULL DEFAULT 0,
+  category_counts jsonb       NOT NULL DEFAULT '[]'::jsonb, -- 商品种类数量明细 [{name,quantity}]
   proxy_cost      numeric(12,2) NOT NULL DEFAULT 0,   -- 代收订单成本合计（不参与本家庭利润）
   proxy_recovered numeric(12,2) NOT NULL DEFAULT 0,   -- 代收订单回收合计
   proxy_profit    numeric(12,2) NOT NULL DEFAULT 0,   -- 代收订单利润合计（需还给对方）

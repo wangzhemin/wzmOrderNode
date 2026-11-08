@@ -6,6 +6,35 @@ const { authRequired } = require('../middleware/auth');
 const router = express.Router();
 router.use(authRequired);
 
+// 订单出货成本：优先使用「最终成本」(latest_cost)；未填时按（订单成本，未填则用订单金额）− 返利 现算
+function effectiveCost(d) {
+  const lc = parseFloat(d.latest_cost);
+  if (!isNaN(lc)) return lc;
+  const base = parseFloat(d.order_cost) > 0 ? parseFloat(d.order_cost) : parseFloat(d.recharge_full) || 0;
+  return base - (parseFloat(d.rebate) || 0);
+}
+
+// 商品种类数量明细 [{name, quantity}]（同一种类合并累加数量）
+function sumCategoryCounts(orders) {
+  const m = new Map();
+  for (const o of orders) {
+    const name = String(o.data.category_name || '未分类').trim() || '未分类';
+    const qty = parseFloat(o.data.quantity) || 0;
+    m.set(name, (m.get(name) || 0) + qty);
+  }
+  return [...m.entries()].map(([name, quantity]) => ({ name, quantity: Math.round(quantity * 100) / 100 }));
+}
+
+// 出货单号 = 种类 + 出货时间 + 随机数，格式：肽敏舒+爱他美-20261108174530-A3F9
+function makeShipmentNo(names) {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  const ts = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+  const rand = Math.random().toString(36).slice(2, 6).toUpperCase();
+  const label = names.slice(0, 2).join('+') + (names.length > 2 ? '等' : '');
+  return `${label}-${ts}-${rand}`;
+}
+
 // GET /api/orders?category_id=&shop=&account=&category_name=&date_from=&date_to=&status=&page=&pageSize=
 // status: active(默认,未出库) / pending / received / shipped / all
 router.get('/', async (req, res) => {
@@ -62,9 +91,11 @@ router.get('/', async (req, res) => {
     params.push(pageSize, (page - 1) * pageSize);
     const { rows } = await pool.query(
       `SELECT o.id, o.category_id, o.data, o.status, o.recharge_id, o.recharge_used, o.shipment_id,
-              o.created_by, u.name AS created_by_name, o.created_at, o.updated_at
+              o.created_by, u.name AS created_by_name, o.created_at, o.updated_at,
+              sh.shipment_no AS shipment_no
        FROM orders o
        LEFT JOIN users u ON u.id = o.created_by
+       LEFT JOIN shipments sh ON sh.id = o.shipment_id
        ${whereSql}
        ORDER BY o.created_at ${sortDir} LIMIT $${params.length - 1} OFFSET $${params.length}`,
       params
@@ -311,7 +342,7 @@ router.post('/ship', async (req, res) => {
     let proxyRecovered = 0;
     for (const o of orders) {
       const isProxy = o.data.is_proxy === '1' || o.data.is_proxy === true;
-      const cost = parseFloat(o.data.order_cost) || 0;
+      const cost = effectiveCost(o.data);
       const rec = parseFloat(o.data.recycle_amount) || 0;
       if (isProxy) {
         proxyCost += cost;
@@ -328,28 +359,41 @@ router.post('/ship', async (req, res) => {
     proxyRecovered = Math.round(proxyRecovered * 100) / 100;
     const proxyProfit = Math.round((proxyRecovered - proxyCost) * 100) / 100;
 
-    const { rows: shipments } = await client.query(
-      `INSERT INTO shipments (express_company, express_no, express_fee, total_cost, total_recovered, total_profit, order_count, created_by, shipper, payment_received, remark, family_id, proxy_cost, proxy_recovered, proxy_profit)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING *`,
-      [
-        String(express_company).trim(),
-        String(express_no || '').trim(),
-        fee,
-        totalCost,
-        totalRecovered,
-        totalProfit,
-        orders.length,
-        req.user.id,
-        String(shipper || '').trim(),
-        payment_received === true,
-        String(remark || '').trim(),
-        req.familyScope,
-        proxyCost,
-        proxyRecovered,
-        proxyProfit,
-      ]
-    );
-    const shipment = shipments[0];
+    // 商品种类数量明细 + 出货单号（种类 + 出货时间 + 随机数，唯一索引兜底，冲突则重试）
+    const counts = sumCategoryCounts(orders);
+    let shipment = null;
+    for (let attempt = 0; attempt < 5 && !shipment; attempt += 1) {
+      const no = makeShipmentNo(counts.map((c) => c.name));
+      try {
+        const { rows: inserted } = await client.query(
+          `INSERT INTO shipments (shipment_no, category_counts, express_company, express_no, express_fee, total_cost, total_recovered, total_profit, order_count, created_by, shipper, payment_received, remark, family_id, proxy_cost, proxy_recovered, proxy_profit)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) RETURNING *`,
+          [
+            no,
+            JSON.stringify(counts),
+            String(express_company).trim(),
+            String(express_no || '').trim(),
+            fee,
+            totalCost,
+            totalRecovered,
+            totalProfit,
+            orders.length,
+            req.user.id,
+            String(shipper || '').trim(),
+            payment_received === true,
+            String(remark || '').trim(),
+            req.familyScope,
+            proxyCost,
+            proxyRecovered,
+            proxyProfit,
+          ]
+        );
+        shipment = inserted[0];
+      } catch (e) {
+        if (e.code !== '23505') throw e; // 出货单号重复则换一个随机数重试
+      }
+    }
+    if (!shipment) throw new Error('出货单号生成失败');
 
     for (const o of orders) {
       await client.query(
