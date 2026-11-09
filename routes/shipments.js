@@ -108,4 +108,57 @@ router.put('/:id/payment', async (req, res) => {
   }
 });
 
+// PUT /api/shipments/:id/fee  修改快递费（总利润联动重算 = 总回收 - 总成本 - 快递费）
+router.put('/:id/fee', async (req, res) => {
+  try {
+    const fee = Number(req.body?.express_fee);
+    if (isNaN(fee) || fee < 0) {
+      return res.status(400).json({ code: 400, msg: '快递费金额不正确' });
+    }
+    const feeVal = Math.round(fee * 100) / 100;
+    const { rows } = await pool.query(
+      `UPDATE shipments
+       SET express_fee = $1,
+           total_profit = ROUND(total_recovered - total_cost - $1, 2)
+       WHERE id = $2 AND family_id = $3
+       RETURNING id, express_fee, total_profit`,
+      [feeVal, req.params.id, req.familyScope || '00000000-0000-0000-0000-000000000000']
+    );
+    if (rows.length === 0) return res.status(404).json({ code: 404, msg: '出货记录不存在' });
+    res.json({ code: 0, msg: '修改成功', data: rows[0] });
+  } catch (err) {
+    console.error('修改快递费失败:', err.message);
+    res.status(500).json({ code: 500, msg: '服务器内部错误' });
+  }
+});
+
+// PUT /api/shipments/:id/info  修改快递公司/快递单号/出货商家
+router.put('/:id/info', async (req, res) => {
+  try {
+    const fields = [];
+    const params = [];
+    for (const key of ['express_company', 'express_no', 'shipper']) {
+      if (req.body?.[key] !== undefined) {
+        params.push(String(req.body[key]).trim());
+        fields.push(`${key} = $${params.length}`);
+      }
+    }
+    if (fields.length === 0) {
+      return res.status(400).json({ code: 400, msg: '请提供要修改的内容' });
+    }
+    params.push(req.params.id, req.familyScope || '00000000-0000-0000-0000-000000000000');
+    const { rows } = await pool.query(
+      `UPDATE shipments SET ${fields.join(', ')}
+       WHERE id = $${params.length - 1} AND family_id = $${params.length}
+       RETURNING id, express_company, express_no, shipper`,
+      params
+    );
+    if (rows.length === 0) return res.status(404).json({ code: 404, msg: '出货记录不存在' });
+    res.json({ code: 0, msg: '修改成功', data: rows[0] });
+  } catch (err) {
+    console.error('修改出货信息失败:', err.message);
+    res.status(500).json({ code: 500, msg: '服务器内部错误' });
+  }
+});
+
 module.exports = router;
