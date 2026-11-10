@@ -214,6 +214,7 @@ ALTER TABLE public.shipments     ADD COLUMN IF NOT EXISTS family_id uuid REFEREN
 ALTER TABLE public.recharges     ADD COLUMN IF NOT EXISTS family_id uuid REFERENCES public.families(id) ON DELETE CASCADE;
 ALTER TABLE public.recycle_items ADD COLUMN IF NOT EXISTS family_id uuid REFERENCES public.families(id) ON DELETE CASCADE;
 ALTER TABLE public.op_logs       ADD COLUMN IF NOT EXISTS family_id uuid;
+ALTER TABLE public.op_logs       ADD COLUMN IF NOT EXISTS action text;
 ALTER TABLE public.dict_types    ADD COLUMN IF NOT EXISTS family_id uuid REFERENCES public.families(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS idx_categories_family    ON public.categories(family_id);
 CREATE INDEX IF NOT EXISTS idx_orders_family        ON public.orders(family_id);

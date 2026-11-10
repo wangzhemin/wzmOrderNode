@@ -155,12 +155,9 @@ async function main() {
   const roleRows = await pool.query('SELECT id, code FROM roles');
   const roleId = Object.fromEntries(roleRows.rows.map((r) => [r.code, r.id]));
 
-  // 角色-权限（家庭主 = 全部业务权限；成员 = 查看+录单发货）
+  // 角色-权限（家庭主/成员 = 全部业务权限，仅家庭管理仍限超管）
   const HEAD_PERMS = PERMS.map((p) => p[0]).filter((c) => c !== 'families.manage');
-  const MEMBER_PERMS = [
-    'orders.view', 'orders.manage', 'shipments.view', 'shipments.manage',
-    'recharges.view', 'recycle.view', 'categories.view', 'dashboard.view',
-  ];
+  const MEMBER_PERMS = HEAD_PERMS;
   const ROLE_PERMS = {
     super_admin: PERMS.map((p) => p[0]),
     family_head: HEAD_PERMS,

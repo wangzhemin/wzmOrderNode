@@ -42,7 +42,7 @@ router.get('/', async (req, res) => {
 
     params.push(pageSize, (page - 1) * pageSize);
     const { rows } = await pool.query(
-      `SELECT id, user_name, method, path, status, ip, cost_ms, created_at FROM op_logs ${whereSql}
+      `SELECT id, user_name, method, path, status, ip, cost_ms, created_at, action FROM op_logs ${whereSql}
        ORDER BY created_at DESC LIMIT $${params.length - 1} OFFSET $${params.length}`,
       params
     );
