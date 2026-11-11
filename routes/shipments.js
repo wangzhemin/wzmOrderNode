@@ -132,15 +132,45 @@ router.put('/:id/fee', async (req, res) => {
   }
 });
 
-// PUT /api/shipments/:id/info  修改快递公司/快递单号/出货商家
+// PUT /api/shipments/:id/info  修改出货信息（快递公司/快递单号/出货商家/备注/快递费/回款信息）
+// 编辑弹窗统一入口：快递费变动时总利润联动重算（总回收 - 总成本 - 快递费）
 router.put('/:id/info', async (req, res) => {
   try {
     const fields = [];
     const params = [];
-    for (const key of ['express_company', 'express_no', 'shipper']) {
+    for (const key of ['express_company', 'express_no', 'shipper', 'remark']) {
       if (req.body?.[key] !== undefined) {
         params.push(String(req.body[key]).trim());
         fields.push(`${key} = $${params.length}`);
+      }
+    }
+    // 快递费：数字校验 + 总利润重算
+    if (req.body?.express_fee !== undefined) {
+      const fee = Number(req.body.express_fee);
+      if (isNaN(fee) || fee < 0) {
+        return res.status(400).json({ code: 400, msg: '快递费金额不正确' });
+      }
+      params.push(Math.round(fee * 100) / 100);
+      fields.push(`express_fee = $${params.length}`);
+      fields.push(`total_profit = ROUND(total_recovered - total_cost - $${params.length}, 2)`);
+    }
+    // 是否回款
+    if (req.body?.payment_received !== undefined) {
+      params.push(req.body.payment_received === true);
+      fields.push(`payment_received = $${params.length}`);
+    }
+    // 实际回款金额（null 表示清空）
+    if (req.body?.actual_amount !== undefined) {
+      if (req.body.actual_amount === null || req.body.actual_amount === '') {
+        params.push(null);
+        fields.push(`actual_amount = $${params.length}`);
+      } else {
+        const n = Number(req.body.actual_amount);
+        if (isNaN(n) || n < 0) {
+          return res.status(400).json({ code: 400, msg: '实际回款金额不正确' });
+        }
+        params.push(Math.round(n * 100) / 100);
+        fields.push(`actual_amount = $${params.length}`);
       }
     }
     if (fields.length === 0) {
@@ -150,7 +180,7 @@ router.put('/:id/info', async (req, res) => {
     const { rows } = await pool.query(
       `UPDATE shipments SET ${fields.join(', ')}
        WHERE id = $${params.length - 1} AND family_id = $${params.length}
-       RETURNING id, express_company, express_no, shipper`,
+       RETURNING *`,
       params
     );
     if (rows.length === 0) return res.status(404).json({ code: 404, msg: '出货记录不存在' });

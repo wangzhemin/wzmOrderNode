@@ -14,15 +14,19 @@ function effectiveCost(d) {
   return base - (parseFloat(d.rebate) || 0);
 }
 
-// 商品种类数量明细 [{name, quantity}]（同一种类合并累加数量）
-function sumCategoryCounts(orders) {
+// 商品种类数量明细 [{name, quantity, unit}]（同一种类合并累加数量；unit 来自回收商品配置）
+function sumCategoryCounts(orders, unitMap) {
   const m = new Map();
   for (const o of orders) {
     const name = String(o.data.category_name || '未分类').trim() || '未分类';
     const qty = parseFloat(o.data.quantity) || 0;
     m.set(name, (m.get(name) || 0) + qty);
   }
-  return [...m.entries()].map(([name, quantity]) => ({ name, quantity: Math.round(quantity * 100) / 100 }));
+  return [...m.entries()].map(([name, quantity]) => ({
+    name,
+    quantity: Math.round(quantity * 100) / 100,
+    unit: (unitMap && unitMap.get(name)) || '',
+  }));
 }
 
 // 出货单号 = 种类 + 出货时间 + 随机数，格式：肽敏舒+爱他美-20261108174530-A3F9
@@ -360,7 +364,12 @@ router.post('/ship', async (req, res) => {
     const proxyProfit = Math.round((proxyRecovered - proxyCost) * 100) / 100;
 
     // 商品种类数量明细 + 出货单号（种类 + 出货时间 + 随机数，唯一索引兜底，冲突则重试）
-    const counts = sumCategoryCounts(orders);
+    // 种类单位映射（快照中带上单位，出货明细展示 ×2罐/×3件）
+    const { rows: unitRows } = await client.query('SELECT name, unit FROM recycle_items WHERE family_id = $1', [
+      req.familyScope || '00000000-0000-0000-0000-000000000000',
+    ]);
+    const unitMap = new Map(unitRows.map((r) => [r.name, r.unit]));
+    const counts = sumCategoryCounts(orders, unitMap);
     let shipment = null;
     for (let attempt = 0; attempt < 5 && !shipment; attempt += 1) {
       const no = makeShipmentNo(counts.map((c) => c.name));

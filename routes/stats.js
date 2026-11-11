@@ -111,6 +111,19 @@ router.get('/', async (req, res) => {
       params
     );
 
+    // 按账号统计（Top 10）
+    const accountRes = await pool.query(
+      `SELECT o.data->>'account' AS name,
+              COUNT(*)::int AS count,
+              COALESCE(SUM(CASE WHEN o.data->>'recycle_amount' <> '' THEN (o.data->>'recycle_amount')::numeric ELSE 0 END), 0) AS recovered,
+              COALESCE(SUM(CASE WHEN o.data->>'latest_cost' <> '' THEN (o.data->>'latest_cost')::numeric ELSE 0 END), 0) AS cost,
+              COALESCE(SUM(CASE WHEN o.data->>'est_profit' <> '' THEN (o.data->>'est_profit')::numeric ELSE 0 END), 0) AS profit
+       FROM orders o ${where}
+       GROUP BY 1 HAVING o.data->>'account' IS NOT NULL AND o.data->>'account' <> ''
+       ORDER BY profit DESC LIMIT 10`,
+      params
+    );
+
     // 订单状态分布（同一筛选范围）
     const statusRes = await pool.query(
       `SELECT o.status, COUNT(*)::int AS count FROM orders o ${where} GROUP BY o.status`,
@@ -177,6 +190,13 @@ router.get('/', async (req, res) => {
           profit: r2(d.profit),
         })),
         byShop: shopRes.rows.map((d) => ({
+          name: d.name,
+          count: d.count,
+          recovered: r2(d.recovered),
+          cost: r2(d.cost),
+          profit: r2(d.profit),
+        })),
+        byAccount: accountRes.rows.map((d) => ({
           name: d.name,
           count: d.count,
           recovered: r2(d.recovered),

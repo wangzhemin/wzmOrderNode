@@ -8,7 +8,7 @@ router.use(authRequired);
 
 // 带大类名称的查询
 const SELECT_SQL = `
-  SELECT ri.id, ri.name, ri.price, ri.category_id, c.name AS category_name, ri.color, ri.created_at
+  SELECT ri.id, ri.name, ri.price, ri.category_id, c.name AS category_name, ri.color, ri.unit, ri.created_at
   FROM recycle_items ri
   LEFT JOIN categories c ON c.id = ri.category_id
 `;
@@ -52,10 +52,10 @@ router.get('/', async (req, res) => {
   }
 });
 
-// POST /api/recycle-items  { name, price, category_id?, color? }
+// POST /api/recycle-items  { name, price, category_id?, color?, unit? }
 router.post('/', async (req, res) => {
   try {
-    const { name, price, category_id, color } = req.body || {};
+    const { name, price, category_id, color, unit } = req.body || {};
     if (!name || !String(name).trim()) {
       return res.status(400).json({ code: 400, msg: '种类名称不能为空' });
     }
@@ -64,6 +64,7 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ code: 400, msg: '回收金额不正确' });
     }
     const c = normalizeColor(color);
+    const u = String(unit || '').trim() || '单';
     await checkCategory(req, pool, category_id);
     const dup = await pool.query('SELECT id FROM recycle_items WHERE name = $1 AND family_id = $2', [
       name.trim(),
@@ -76,8 +77,8 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ code: 400, msg: '请先选择家庭' });
     }
     await pool.query(
-      'INSERT INTO recycle_items (name, price, category_id, color, family_id) VALUES ($1, $2, $3, $4, $5)',
-      [name.trim(), p, category_id || null, c, req.familyScope]
+      'INSERT INTO recycle_items (name, price, category_id, color, unit, family_id) VALUES ($1, $2, $3, $4, $5, $6)',
+      [name.trim(), p, category_id || null, c, u, req.familyScope]
     );
     const { rows } = await pool.query(`${SELECT_SQL} WHERE ri.name = $1 AND ri.family_id = $2`, [
       name.trim(),
@@ -93,10 +94,10 @@ router.post('/', async (req, res) => {
   }
 });
 
-// PUT /api/recycle-items/:id  { name, price, category_id?, color? }
+// PUT /api/recycle-items/:id  { name, price, category_id?, color?, unit? }
 router.put('/:id', async (req, res) => {
   try {
-    const { name, price, category_id, color } = req.body || {};
+    const { name, price, category_id, color, unit } = req.body || {};
     if (!name || !String(name).trim()) {
       return res.status(400).json({ code: 400, msg: '种类名称不能为空' });
     }
@@ -105,6 +106,7 @@ router.put('/:id', async (req, res) => {
       return res.status(400).json({ code: 400, msg: '回收金额不正确' });
     }
     const c = normalizeColor(color);
+    const u = String(unit || '').trim() || '单';
     await checkCategory(req, pool, category_id);
     const dup = await pool.query(
       'SELECT id FROM recycle_items WHERE name = $1 AND id <> $2 AND family_id = $3',
@@ -114,8 +116,8 @@ router.put('/:id', async (req, res) => {
       return res.status(409).json({ code: 409, msg: '该种类已存在' });
     }
     const { rowCount } = await pool.query(
-      'UPDATE recycle_items SET name = $1, price = $2, category_id = $3, color = $4 WHERE id = $5 AND family_id = $6',
-      [name.trim(), p, category_id || null, c, req.params.id, fam(req)]
+      'UPDATE recycle_items SET name = $1, price = $2, category_id = $3, color = $4, unit = $5 WHERE id = $6 AND family_id = $7',
+      [name.trim(), p, category_id || null, c, u, req.params.id, fam(req)]
     );
     if (rowCount === 0) return res.status(404).json({ code: 404, msg: '回收商品不存在' });
     const { rows } = await pool.query(`${SELECT_SQL} WHERE ri.id = $1 AND ri.family_id = $2`, [

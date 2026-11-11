@@ -3,6 +3,7 @@ require('dotenv').config();
 const path = require('path');
 const express = require('express');
 const cors = require('cors');
+const pool = require('./db');
 
 const logger = require('./middleware/logger');
 const { authRequired, requirePerm } = require('./middleware/auth');
@@ -76,3 +77,20 @@ app.use((err, req, res, next) => {
 app.listen(PORT, () => {
   console.log(`✅ 后端服务已启动: http://localhost:${PORT}`);
 });
+
+// 操作日志保留策略：仅保留最近 180 天，服务启动时 + 每天凌晨自动清理
+const LOG_RETENTION_DAYS = 180;
+async function cleanOldLogs() {
+  try {
+    const r = await pool.query(
+      `DELETE FROM op_logs WHERE created_at < NOW() - INTERVAL '${LOG_RETENTION_DAYS} days'`
+    );
+    if (r.rowCount > 0) {
+      console.log(`🧹 已清理 ${r.rowCount} 条超过 ${LOG_RETENTION_DAYS} 天的操作日志`);
+    }
+  } catch (e) {
+    console.error('清理操作日志失败:', e.message);
+  }
+}
+cleanOldLogs();
+setInterval(cleanOldLogs, 24 * 60 * 60 * 1000);
